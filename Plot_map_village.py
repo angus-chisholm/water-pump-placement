@@ -4,8 +4,8 @@ from scipy.interpolate import griddata
 import numpy as np
 
 # Charger les données de la feuille excel
-file_path = 'Map_village_20241227_t.xlsx'
-data = pd.read_excel(file_path, sheet_name='Sheet1')
+file_path = 'Map_village_20241227_data.csv'
+data = pd.read_csv(file_path)
 
 # Extraire les coordonnées et types
 types = data['Type']
