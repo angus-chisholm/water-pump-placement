@@ -3,13 +3,16 @@ import pandas as pd
 import numpy as np
 from utils import read_data, calculate_distance
 
-def optimize_water_sources(data_file, max_distance, cost_borehole, cost_standpipe, cost_per_meter):
+def optimize_water_sources(data_file, potential_locations, max_distance, cost_borehole, cost_standpipe, cost_per_meter):
     # Load data
     data = read_data(data_file)
     
     # Filter households and water sources
     households = data[data['Type'] == 'Household']
-    water_sources = data[data['Type'] == 'Hand Pump']
+    existing_water_sources = data[data['Type'] == 'Hand Pump']
+
+    # Combine existing water sources with potential new locations
+    water_sources = pd.concat([existing_water_sources, potential_locations], ignore_index=True)
 
     # Create a model
     model = Model("Water Source Optimization")
@@ -21,18 +24,25 @@ def optimize_water_sources(data_file, max_distance, cost_borehole, cost_standpip
     # Decision variables: number of people served by each water source
     served_vars = model.addVars(households.index, vtype=GRB.CONTINUOUS, name="Served")
 
+    # Define a weighting factor to balance cost minimization and people served maximization
+    weight_cost = 1.0
+    weight_served = 1.0
+
     # Objective: Minimize costs while maximizing the number of people served
     model.setObjective(
-        cost_borehole * borehole_vars.sum() + cost_standpipe * standpipe_vars.sum() + 
-        cost_per_meter * sum(
-            standpipe_vars[w_index] * min(
-                calculate_distance(water_sources.loc[w_index, 'Lat'], water_sources.loc[w_index, 'Lon'], 
-                                   water_sources.loc[other_index, 'Lat'], water_sources.loc[other_index, 'Lon'])
-                for other_index in water_sources.index if other_index != w_index
+        weight_cost * (
+            cost_borehole * borehole_vars.sum() + 
+            cost_standpipe * standpipe_vars.sum() + 
+            cost_per_meter * sum(
+                standpipe_vars[w_index] * min(
+                    calculate_distance(water_sources.loc[w_index, 'Lat'], water_sources.loc[w_index, 'Lon'], 
+                                       water_sources.loc[other_index, 'Lat'], water_sources.loc[other_index, 'Lon'])
+                    for other_index in water_sources.index if other_index != w_index
+                )
+                for w_index in water_sources.index
             )
-            for w_index in water_sources.index
-        ) - served_vars.sum(),
-        GRB.MAXIMIZE
+        ) - weight_served * served_vars.sum(),
+        GRB.MINIMIZE
     )
 
     # Constraints: Each household can only be served by one water source within the max distance
