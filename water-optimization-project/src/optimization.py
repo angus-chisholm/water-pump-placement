@@ -18,60 +18,71 @@ def optimize_water_sources(data_file, potential_locations, max_distance, cost_bo
     model = Model("Water Source Optimization")
 
     # Decision variables: whether to place a borehole or standpipe at a given location
-    borehole_vars = model.addVars(water_sources.index, vtype=GRB.BINARY, name="Borehole")
-    standpipe_vars = model.addVars(water_sources.index, vtype=GRB.BINARY, name="Standpipe")
+    borehole_vars = model.addVars(potential_locations.index, vtype=GRB.BINARY, name="Borehole")
+    standpipe_vars = model.addVars(potential_locations.index, vtype=GRB.BINARY, name="Standpipe")
 
     # Decision variables: number of people served by each water source
     served_vars = model.addVars(households.index, vtype=GRB.CONTINUOUS, name="Served")
+
+    # Define impact as the number of people served within the max distance of a water source
+    def impact():
+        return sum(household['Nb capita'] 
+                   for h_index, household in households.iterrows() 
+                   if min(
+                        calculate_distance(water_source['Lat'], water_source['Lon'], 
+                                            household['Lat'], household['Lon'])
+                            for w_index, water_source in water_sources.iterrows()
+                        ) <= max_distance
+                    )
+    
 
     # Define a weighting factor to balance cost minimization and people served maximization
     weight_cost = 1.0
     weight_served = 1.0
 
-    # Objective: Minimize costs while maximizing the number of people served
-    model.setObjective(
-        weight_cost * (
+    costs = (
             cost_borehole * borehole_vars.sum() + 
             cost_standpipe * standpipe_vars.sum() + 
             cost_per_meter * sum(
                 standpipe_vars[w_index] * min(
-                    calculate_distance(water_sources.loc[w_index, 'Lat'], water_sources.loc[w_index, 'Lon'], 
-                                       water_sources.loc[other_index, 'Lat'], water_sources.loc[other_index, 'Lon'])
-                    for other_index in water_sources.index if other_index != w_index
+                    calculate_distance(potential_locations.loc[w_index, 'Lat'], potential_locations.loc[w_index, 'Lon'], 
+                                       existing_water_sources.loc[other_index, 'Lat'], existing_water_sources.loc[other_index, 'Lon'])
+                    for other_index in existing_water_sources.index
                 )
-                for w_index in water_sources.index
+                for w_index in potential_locations.index
             )
-        ) - weight_served * served_vars.sum(),
+        )
+
+    # Objective: Minimize costs while maximizing the number of people served
+    model.setObjective(
+        weight_cost * costs - weight_served * impact(),
         GRB.MINIMIZE
     )
 
-    # Constraints: Each household can only be served by one water source within the max distance
-    for h_index, household in households.iterrows():
-        model.addConstr(
-            served_vars[h_index] <= sum(
-                (borehole_vars[w_index] + standpipe_vars[w_index]) 
-                for w_index, water_source in water_sources.iterrows()
-                if calculate_distance(household['Lat'], household['Lon'], water_source['Lat'], water_source['Lon']) <= max_distance
-            ),
-            name=f"Serve_Household_{h_index}"
-        )
+    # Constraints: At least one water source must be selected
+    model.addConstr(
+        borehole_vars.sum() + standpipe_vars.sum() >= 1,
+        name="At_Least_One_Source"
+    )
 
-    # Constraints: A standpipe must be connected to a borehole
-    for w_index in water_sources.index:
-        model.addConstr(
-            standpipe_vars[w_index] <= sum(
-                borehole_vars[other_index] 
-                for other_index in water_sources.index if other_index != w_index
-            ),
-            name=f"Standpipe_Connection_{w_index}"
-        )
+    # # Constraints: Impact above a certain threshold
+    # model.addConstr(
+    #     impact() >= 1000,
+    #     name="Impact_Threshold"
+    # )
+
+    model.update()
 
     # Solve the model
     model.optimize()
 
-    # Collect results
-    optimal_boreholes = [w_index for w_index in water_sources.index if borehole_vars[w_index].X > 0.5]
-    optimal_standpipes = [w_index for w_index in water_sources.index if standpipe_vars[w_index].X > 0.5]
-    served_people = {h_index: served_vars[h_index].X for h_index in households.index}
+    # Check if the model was solved successfully
+    if model.status == GRB.OPTIMAL:
+        # Collect results
+        optimal_boreholes = [w_index for w_index in potential_locations.index if borehole_vars[w_index].X > 0.5]
+        optimal_standpipes = [w_index for w_index in potential_locations.index if standpipe_vars[w_index].X > 0.5]
 
-    return optimal_boreholes, optimal_standpipes, served_people
+        return optimal_boreholes, optimal_standpipes, impact(), costs.getValue()
+    else:
+        print("Optimization was not successful. Status:", model.status)
+        return [], [], {}
