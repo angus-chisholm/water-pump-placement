@@ -1,4 +1,5 @@
 import pandas as pd
+import plotly.express as px
 from optimization import optimize_water_sources
 
 def main():
@@ -7,7 +8,7 @@ def main():
 
     # Define potential new locations for water sources
     potential_locations = pd.DataFrame({'Type': ['Potential'] * 5,
-        'Lon': [-11.432, -11.433, -11.434, -11.435, -11.436],
+        'Lon': [-11.423, -11.428, -11.433, -11.438, -11.443],
         'Lat': [10.980, 10.981, 10.982, 10.983, 10.984],
         'Altitude': [370, 371, 372, 373, 374],
         'Nb capita': [0] * 5,
@@ -19,26 +20,28 @@ def main():
     })
 
     # Initialize optimization process
-    optimal_boreholes, optimal_standpipes, impact, costs = optimize_water_sources(
+    optimal_sources, impact, costs = optimize_water_sources(
         data_file, potential_locations, max_distance=800, cost_borehole=5000, cost_standpipe=500, cost_per_meter=2
     )
 
-    locations = {'borehole': [], 'standpipe': []}
-    for optimal_borehole in optimal_boreholes:
-        borehole_location = (potential_locations.loc[optimal_borehole, 'Lon'], potential_locations.loc[optimal_borehole, 'Lat'])
-        locations['borehole'].append(borehole_location)
-    
-    for optimal_standpipe in optimal_standpipes:
-        standpipe_location = (potential_locations.loc[optimal_standpipe, 'Lon'], potential_locations.loc[optimal_standpipe, 'Lat'])
-        locations['standpipe'].append(standpipe_location)
+    # Create a DataFrame for the plot
+    plot_data = pd.DataFrame({
+        'Cost': costs,
+        'Impact': [-i for i in impact],  # Negative impact
+        'Optimal Sources': [str(sources) for sources in optimal_sources]
+    })
+
+    # Create an interactive plot
+    fig = px.scatter(plot_data, x='Cost', y='Impact', hover_data=['Optimal Sources'])
+    fig.update_layout(title='Cost vs. Impact with Optimal Sources', xaxis_title='Cost (USD)', yaxis_title='Negative Impact')
+    fig.show()
 
     # Output results    
     print("Optimal Placement and Type of Water Sources:")
-    print("Boreholes:", optimal_boreholes)
-    print("Standpipes:", optimal_standpipes)
+    print("Optimal Sources:", optimal_sources)
     print("People within max distance:", impact)
-    print("Total Costs (USD):", round(costs, 2))
-    print(f"Sources chosen: {locations['borehole']} borehole; {locations['standpipe']} standpipe")
+    print("Total Costs (USD):", round(sum(costs), 2))
+
 if __name__ == "__main__":
     main()
 
