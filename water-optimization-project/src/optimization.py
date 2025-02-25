@@ -11,40 +11,26 @@ def optimize_water_sources(data_file, potential_locations, max_distance, cost_bo
     households = data[data['Type'] == 'Household']
     existing_water_sources = data[data['Type'] == 'Hand Pump']
 
-    # Combine existing water sources with potential new locations
-    water_sources = pd.concat([existing_water_sources, potential_locations], ignore_index=True)
-
     # Create a model
     model = Model("Water Source Optimization")
 
     # Decision variables: whether to place a borehole or standpipe at a given location
-    borehole_vars = model.addVars(potential_locations.index, vtype=GRB.BINARY, name="Borehole")
-    standpipe_vars = model.addVars(potential_locations.index, vtype=GRB.BINARY, name="Standpipe")
+    borehole_vars = model.addVars(potential_locations.shape[0], vtype=GRB.BINARY, name="Borehole")
+    standpipe_vars = model.addVars(potential_locations.shape[0], vtype=GRB.BINARY, name="Standpipe")
 
-
-    # Define impact as the number of people served within the max distance of a water source
-    impact = sum(household['Nb capita'] 
-                   for h_index, household in households.iterrows() 
-                   if min(
-                        calculate_distance(water_source['Lat'], water_source['Lon'], 
-                                            household['Lat'], household['Lon'])
-                            for w_index, water_source in water_sources.iterrows()
-                        ) <= max_distance
-                    )
-
-    
+    # Define costs
     costs = (
-            cost_borehole * borehole_vars.sum() + 
-            cost_standpipe * standpipe_vars.sum() + 
-            cost_per_meter * sum(
-                standpipe_vars[w_index] * min(
-                    calculate_distance(potential_locations.loc[w_index, 'Lat'], potential_locations.loc[w_index, 'Lon'], 
-                                       existing_water_sources.loc[other_index, 'Lat'], existing_water_sources.loc[other_index, 'Lon'])
-                    for other_index in existing_water_sources.index
-                )
-                for w_index in potential_locations.index
+        cost_borehole * borehole_vars.sum() + 
+        cost_standpipe * standpipe_vars.sum() + 
+        cost_per_meter * sum(
+            standpipe_vars[w_index] * min(
+                calculate_distance(potential_locations.loc[w_index, 'Lat'], potential_locations.loc[w_index, 'Lon'], 
+                                   existing_water_sources.loc[other_index, 'Lat'], existing_water_sources.loc[other_index, 'Lon'])
+                for other_index in existing_water_sources.index
             )
+            for w_index in potential_locations.index
         )
+    )
 
     # Constraints: At least one water source must be selected
     model.addConstr(
@@ -52,39 +38,58 @@ def optimize_water_sources(data_file, potential_locations, max_distance, cost_bo
         name="At_Least_One_Source"
     )
 
+    # Trouver distance a la pompe la plus proche
+    distances = np.zeros((len(households),len(existing_water_sources)+len(potential_locations)))
+    for h_index, household in households.iterrows():
+        for w_index in range(potential_locations.shape[0]):
+            if borehole_vars[w_index] > 0.5 or standpipe_vars[w_index] > 0.5:
+                distances[h_index][w_index] = calculate_distance(household['Lat'], household['Lon'], potential_locations.loc[w_index, 'Lat'], potential_locations.loc[w_index, 'Lon'])
+            else:
+                distances[h_index][w_index] = np.inf
+        for e_index in existing_water_sources.index:
+            distances[h_index][e_index + len(potential_locations)] = calculate_distance(household['Lat'], household['Lon'], existing_water_sources.loc[e_index, 'Lat'], existing_water_sources.loc[e_index, 'Lon'])      
 
-    minimised_function = []
+    distances = np.min(distances, axis=1)
+
+    impact = sum(household['Nb capita'] * (distances[h_index] <= max_distance)
+        for h_index, household in households.iterrows()
+        )
+
+    function = []
     optimised_impact = []
     optimised_costs = []
 
-    # Define a weighting factor to balance cost minimization and impact maximization
-    impact_min = np.linspace(0,2000,21)
-
-    for impact_level in impact_min:
-        model.addConstr(
-            impact >= impact_level,
-            name="Impact_Threshold"
-        )
-
-        model.setObjective(
-            costs,
-            GRB.MINIMIZE
-        )
-
-        model.update()
-
+    # Optimize the model whilst increasing the minimum impact
+    while True:
         model.optimize()
-
-        if model.status == GRB.OPTIMAL:
-            optimal_boreholes = [w_index for w_index in potential_locations.index if borehole_vars[w_index].X > 0.5]
-            optimal_standpipes = [w_index for w_index in potential_locations.index if standpipe_vars[w_index].X > 0.5]
-
-            minimised_function.append((optimal_boreholes, optimal_standpipes))
-            optimised_impact.append(impact())
-            optimised_costs.append(costs.getValue())
-
-        else:
-            print("Optimization was not successful. Status:", model.status)
-            return [], [], {}
         
-    return minimised_function, optimised_impact, optimised_costs
+        # Retrieve and print solution
+        if model.status == GRB.OPTIMAL:
+            # Trouver distance a la pompe la plus proche
+            distances = np.zeros((len(households),len(existing_water_sources)+len(potential_locations)))
+            for h_index, household in households.iterrows():
+                for w_index in range(potential_locations.shape[0]):
+                    if borehole_vars[w_index].x > 0.5 or standpipe_vars[w_index].x > 0.5:
+                        distances[h_index][w_index] = calculate_distance(household['Lat'], household['Lon'], potential_locations.loc[w_index, 'Lat'], potential_locations.loc[w_index, 'Lon'])
+                    else:
+                        distances[h_index][w_index] = np.inf
+                for e_index in existing_water_sources.index:
+                    distances[h_index][e_index + len(potential_locations)] = calculate_distance(household['Lat'], household['Lon'], existing_water_sources.loc[e_index, 'Lat'], existing_water_sources.loc[e_index, 'Lon'])      
+
+            distances = np.min(distances, axis=1)
+
+            impact_min = sum(household['Nb capita'] * (distances[h_index] <= max_distance)
+                for h_index, household in households.iterrows()
+                )
+
+            optimal_sources = [(w_index, 'Borehole') for w_index in potential_locations.index if borehole_vars[w_index].X > 0.5] + \
+                              [(w_index, 'Standpipe') for w_index in potential_locations.index if standpipe_vars[w_index].X > 0.5]
+            optimised_impact.append(impact)
+            optimised_costs.append(costs.getValue())
+            function.append(optimal_sources)
+            model.addConstr(impact >= impact_min, name = 'impact limits')
+        else:
+            print("No more optimal solutions found.")
+            break
+        
+    return function, optimised_impact, optimised_costs
