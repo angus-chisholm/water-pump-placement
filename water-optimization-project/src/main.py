@@ -1,27 +1,15 @@
 import pandas as pd
 import plotly.express as px
-from optimization import optimize_water_sources
+from optimisationv3 import optimise_water_sources
 
 def main():
     # Load data from CSV
     data_file = 'water-optimization-project/data/Map_village_20241227_data.csv'
 
-    # Define potential new locations for water sources
-    potential_locations = pd.DataFrame({'Type': ['Potential'] * 5,
-        'Lon': [-11.423, -11.428, -11.433, -11.438, -11.443],
-        'Lat': [10.980, 10.981, 10.982, 10.983, 10.984],
-        'Altitude': [370, 371, 372, 373, 374],
-        'Nb capita': [0] * 5,
-        'Drink': [0] * 5,
-        'Cook': [0] * 5,
-        'Hygiene': [0] * 5,
-        'Laundry': [0] * 5,
-        'Usage': [0] * 5
-    })
 
     # Initialize optimization process
-    optimal_sources, impact, costs = optimize_water_sources(
-        data_file, potential_locations, max_distance=800, cost_borehole=5000, cost_standpipe=500, cost_per_meter=2
+    optimal_sources, impact, costs = optimise_water_sources(
+        data_file, max_distance=800, cost_borehole=5000, cost_standpipe=500, cost_pipe=2
     )
 
     # Create a DataFrame for the plot

@@ -1,0 +1,9 @@
+\ Model Pump optimisation_copy
+\ LP format - for model browsing. Use MPS format to capture full model detail.
+\ Signature: 0xd8241660b71b7b9a
+Minimize
+ 
+Subject To
+ longitude_maximum: Position[0] <= -11.41988642
+Bounds
+End
