@@ -4,8 +4,9 @@ from scipy.interpolate import griddata
 import numpy as np
 
 # Charger les données de la feuille excel
-file_path = 'Map_village_20241227_data.csv'
+file_path = 'water-optimization-project\data\Map_village_20241227_data.csv'
 data = pd.read_csv(file_path)
+data.loc[len(data)] = ['Hand Pump',-11.4325061,   10.98203895,370,None,None,None,None,None,None]
 
 # Extraire les coordonnées et types
 types = data['Type']
@@ -33,7 +34,7 @@ plt.colorbar(label="Altitude (m)")
 
 # Tracer chaque type par-dessus
 plt.scatter(household['Lon'], household['Lat'], c='blue', alpha=0.7, label='Household')
-plt.scatter(hand_pump['Lon'], hand_pump['Lat'], c='green', alpha=0.7, label='Hand Pump')
+plt.scatter(hand_pump['Lon'], hand_pump['Lat'], c='green', alpha=1, label='Hand Pump')
 plt.scatter(open_well['Lon'], open_well['Lat'], c='red', alpha=0.7, label='Open Well')
 plt.scatter(tank['Lon'], tank['Lat'], c='purple', alpha=0.7, label='Tank')
 
