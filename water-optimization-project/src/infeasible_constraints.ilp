@@ -1,0 +1,9 @@
+\ Model Standpipe Optim_copy
+\ LP format - for model browsing. Use MPS format to capture full model detail.
+\ Signature: 0xd8241660b71b7b9a
+Minimize
+ 
+Subject To
+ max_bound_lon: position[0] <= -11.41988642
+Bounds
+End

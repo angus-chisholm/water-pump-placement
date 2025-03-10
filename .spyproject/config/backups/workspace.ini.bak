@@ -4,7 +4,7 @@ save_data_on_exit = True
 save_history = True
 save_non_project_files = False
 project_type = 'empty-project-type'
-recent_files = ['version1.py', '..\\..\\..\\..\\..\\.spyder-py3\\temp.py', 'Plot_map_village.py']
+recent_files = ['Plot_map_village.py', '..\\distances_village.py', '..\\optimise_distances_v3.py', 'water-optimization-project\\src\\main.py', 'water-optimization-project\\src\\optimization.py', 'water-optimization-project\\src\\utils.py', '..\\functions_optimise.py', 'water-optimization-project\\src\\optimizationv2.py', 'water-optimization-project\\src\\mainv2.py', 'water-optimization-project\\src\\testing againn.py', 'water-optimization-project\\src\\and again.py', 'water-optimization-project\\src\\infeasible_constraints.ilp']
 
 [main]
 version = 0.2.0
