@@ -1,5 +1,0 @@
-Gurobi
-pandas
-numpy
-scipy
-matplotlib
