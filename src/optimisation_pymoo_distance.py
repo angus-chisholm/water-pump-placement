@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import geopy.distance as geo
 from utils import read_data
 
-data_file = r'water-optimization-project/data/Map_village_20241227_data.csv'
+data_file = r'data\Map_village_20241227_data.csv'
 
 data,households,pumps = read_data(data_file)
 
