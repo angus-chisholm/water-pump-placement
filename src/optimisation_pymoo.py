@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 import geopy.distance as geo
 from utils import read_data
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 data_file = r'data\Map_village_20241227_data.csv'
 
@@ -49,11 +51,13 @@ bounds = np.array([
     
 
 class MyProblem(ElementwiseProblem):
-    def __init__(self):
-        super().__init__(n_var=2, n_obj=2, n_constr=1, xl=bounds[0], xu=bounds[1])  # 2D search space
+    def __init__(self, pump_specified=None):
+        super().__init__(n_var=2, n_obj=2, n_constr=2, xl=bounds[0], xu=bounds[1])  # 2D search space
         self.pump_indices = []  # Store pump indices
+        self.pump_specified = pump_specified  # Specify a pump index to be fixed
 
     def _evaluate(self, x, out, *args, **kwargs):
+
         # Compute weighted sum of distances to points in pos_households
         f1 = impact(pos_pumps,pos_households,nb_capita,x)-initial_impact  # Negative impact calculation with new x location
         
@@ -62,20 +66,33 @@ class MyProblem(ElementwiseProblem):
         for index,pump in enumerate(pos_pumps):
             f2_distances[index] = geo.great_circle(pump, x).meters
         f2 = cost_conversion+cost_standpipe+cost_per_meter*np.min(f2_distances)  # Minimum distance to any point in pos_pumps
-        pump_index = np.argmin(f2_distances)  # Index of the closest pump
+        # Add penalty term if the new pump is not closest to the specified pump
+        if self.pump_specified is not None:
+            if np.argmin(f2_distances) != self.pump_specified:
+                f2 = 1e10
+
 
 
         # Define constraint: f1 >= c ## could change to be above initial impact!!
         c = initial_impact - 0.5
-        g = f1-c
+        g1 = f1-c
+        g2 = f2-10000  # Constraint for f2 (cost) to be less than 10000
 
         out["F"] = [f1, f2]  # Objective functions
-        out["G"] = [g]  # Constraints (must be <= 0)
-        self.pump_indices.append(pump_index)
+        out["G"] = [g1,g2]  # Constraints (must be <= 0)
+
+    def get_final_pump_indices(self, res):
+        """Retrieve pump indices for the final generation."""
+        self.pump_indices = []
+        for x in res.X:  # Iterate over the final generation's solutions
+            f2_distances = np.zeros(len(pos_pumps))
+            for index, pump in enumerate(pos_pumps):
+                f2_distances[index] = geo.great_circle(pump, x).meters
+            pump_index = np.argmin(f2_distances)
+            self.pump_indices.append(pump_index)
 
 
-
-def optimise_nsgaII():
+def optimise_nsgaII(pump_specified = None):
     # Define the NSGA-II optimization algorithm
     algorithm = NSGA2(
         pop_size=100,
@@ -86,17 +103,14 @@ def optimise_nsgaII():
     )
 
     # Solve the problem
-    problem = MyProblem()
+    problem = MyProblem(pump_specified)
     res = minimize(problem,
                 algorithm,
                 ('n_gen', 10),
-                #termination=DefaultMultiObjectiveTermination(),
                 seed=1,
                 verbose=True)
-
-    # #Plot the Pareto front (objective values)
-    # Scatter().add(res.F).show()
-    # #best_index = np.argmin(res.F)
+    
+    problem.get_final_pump_indices(res)
 
 
     # Plot the Pareto front (objective values)
@@ -107,20 +121,14 @@ def optimise_nsgaII():
 
     return res.X, res.F, sol_pumps
 
-sol_pos,sol_val,sol_pumps = optimise_nsgaII()
-
-
-#pos_pumps = np.concatenate((pos_pumps,sol_pos), axis = 0)
+pump_specified = 0  # Specify int pump index if constraint is needed
+sol_pos,sol_val,sol_pumps = optimise_nsgaII(pump_specified) # Specify int pump index if constraint is needed
 
 pos_pumps_new = sol_pos
 
-# plt.scatter(households['Lon'].to_numpy(), households['Lat'].to_numpy(), c='blue', label='Household')
-# plt.scatter(pos_pumps[:,0],pos_pumps[:,1],c='red',label='pump')
-# plt.legend()
-# plt.show()
 
 # Plot households and pumps with colorbar based on the first objective function
-fig = px.scatter(x=households['Lon'].to_numpy(), y=households['Lat'].to_numpy(), color_discrete_sequence=['black'], labels={'x': 'Longitude', 'y': 'Latitude'}, title='Households and Pumps')
+fig = px.scatter(x=households['Lon'].to_numpy(), y=households['Lat'].to_numpy(), color_discrete_sequence=['black'], labels={'x': 'Longitude', 'y': 'Latitude'}, title=f'Households and Pumps, existing pump {pump_specified} chosen')
 fig.add_scatter(x=pos_pumps[:, 0], y=pos_pumps[:, 1], mode='markers', marker=dict(color='red'), name='Previous Pumps')
 fig.add_scatter(x=pos_pumps_new[:, 0], y=pos_pumps_new[:, 1], mode='markers', marker=dict(color=sol_val[:, 0], colorscale='Pinkyl', colorbar=dict(title='Impact')), name='New Pumps')
 fig.show()
@@ -138,27 +146,76 @@ for i,household in enumerate(pos_households):
         pump_index_min[x,i] = np.argmin(pump_distances)
 
 
-consumption_pump = np.zeros((len(pos_pumps_with_new),len(pos_pumps)))
-for x in range(len(pos_pumps_with_new)):
-    for i,household in households.iterrows():
-        if pump_index_min[x,i] <= 2:
-            consumption_pump[x,int(pump_index_min[x,i])] += household['Nb capita']*consumption_person
-        elif pump_index_min[x,i] == 3:
-            consumption_pump[x,sol_pumps[x]] += household['Nb capita']*consumption_person
+# Initialize consumption_pump to store the total consumption for each pump
+consumption_pump = np.zeros((len(pos_pumps_with_new), len(pos_pumps) + 1))  # +1 for the new pump in each solution
+
+# Update consumption_pump based on the closest pump
+for x in range(len(pos_pumps_with_new)):  # Iterate over solutions
+    for i, household in households.iterrows():  # Iterate over households
+        closest_pump_index = int(pump_index_min[x, i])  # Closest pump index
+        consumption_pump[x, closest_pump_index] += household['Nb capita'] * consumption_person
+        if closest_pump_index == 3:
+            consumption_pump[x,sol_pumps[x]] += household['Nb capita'] * consumption_person  # Add consumption from the new pump to the closest existing pump
+
+indices = np.arange(len(pos_pumps_with_new))
+fig = make_subplots(rows=4, cols=1)
+
+fig.add_trace(go.Scatter(
+    x=indices,
+    y=consumption_pump[:,0],
+    name=f'Pump0,pos={pos_pumps[0]}',
+    mode='markers',
+    marker=dict(
+        size=5,
+        color=sol_val[:, 0], 
+        colorscale='Pinkyl', 
+        colorbar=dict(title='Impact'),
+        showscale=True
+    )
+), row=1, col=1)
+
+fig.add_trace(go.Scatter(
+    x=indices,
+    y=consumption_pump[:,1],
+    name=f'Pump1,pos={pos_pumps[1]}',
+    mode='markers',
+    marker=dict(
+        size=5,
+        color=sol_val[:, 0], 
+        colorscale='Pinkyl', 
+        colorbar=dict(title='Impact'),
+        showscale=True
+    )
+), row=2, col=1)
+
+fig.add_trace(go.Scatter(
+    x=indices,
+    y=consumption_pump[:,2],
+    name=f'Pump2,pos={pos_pumps[2]}',
+    mode='markers',
+    marker=dict(
+        size=5,
+        color=sol_val[:, 0], 
+        colorscale='Pinkyl', 
+        colorbar=dict(title='Impact'),
+        showscale=True
+    )
+), row=3, col=1)
+
+fig.add_trace(go.Scatter(
+    x=indices,
+    y=consumption_pump[:,3],
+    name=f'Pump3, new pump',
+    mode='markers',
+    marker=dict(
+        size=5,
+        color=sol_val[:, 0], 
+        colorscale='Pinkyl', 
+        colorbar=dict(title='Impact'),
+        showscale=True
+    )
+), row=4, col=1)
 
 
-fig2, ax = plt.subplots(2,2,sharex='col',sharey='row')
-ax[0][0].scatter(range(len(pos_pumps_with_new)),consumption_pump[:,0])
-ax[0][0].set_title(f'Pump1,pos={pos_pumps[0]}')
-ax[0][0].legend()
-
-ax[0][1].scatter(range(len(pos_pumps_with_new)),consumption_pump[:,1])
-ax[0][1].set_title(f'Pump2,pos={pos_pumps[1]}')
-ax[0][1].legend()
-
-ax[1][0].scatter(range(len(pos_pumps_with_new)),consumption_pump[:,2])
-ax[1][0].set_title(f'Pump3,pos={pos_pumps[2]}')
-ax[1][0].legend()
-
-plt.tight_layout()
-plt.show()
+fig.update_layout(height=800, width=1400, title_text=f"Consumption at each standpipe (last plot is new pump), , existing pump {pump_specified} chosen")
+fig.show()
