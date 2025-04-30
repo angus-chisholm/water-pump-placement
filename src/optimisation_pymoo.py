@@ -65,11 +65,12 @@ class MyProblem(ElementwiseProblem):
         f2_distances = np.zeros(len(pos_pumps))
         for index,pump in enumerate(pos_pumps):
             f2_distances[index] = geo.great_circle(pump, x).meters
-        f2 = cost_conversion+cost_standpipe+cost_per_meter*np.min(f2_distances)  # Minimum distance to any point in pos_pumps
+        
         # Add penalty term if the new pump is not closest to the specified pump
         if self.pump_specified is not None:
-            if np.argmin(f2_distances) != self.pump_specified:
-                f2 = 1e10
+            f2 = cost_conversion+cost_standpipe+cost_per_meter*f2_distances[self.pump_specified]
+        else:
+            f2 = cost_conversion+cost_standpipe+cost_per_meter*np.min(f2_distances)  # Minimum distance to any point in pos_pumps
 
 
 
