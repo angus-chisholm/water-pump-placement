@@ -52,7 +52,7 @@ bounds = np.array([
 
 class MyProblem(ElementwiseProblem):
     def __init__(self, pump_specified=None):
-        super().__init__(n_var=2, n_obj=2, n_constr=2, xl=bounds[0], xu=bounds[1])  # 2D search space
+        super().__init__(n_var=2, n_obj=2, n_constr=1, xl=bounds[0], xu=bounds[1])  # 2D search space
         self.pump_indices = []  # Store pump indices
         self.pump_specified = pump_specified  # Specify a pump index to be fixed
 
@@ -77,10 +77,9 @@ class MyProblem(ElementwiseProblem):
         # Define constraint: f1 >= c ## could change to be above initial impact!!
         c = initial_impact - 0.5
         g1 = f1-c
-        g2 = f2-10000  # Constraint for f2 (cost) to be less than 10000
 
         out["F"] = [f1, f2]  # Objective functions
-        out["G"] = [g1,g2]  # Constraints (must be <= 0)
+        out["G"] = [g1]  # Constraints (must be <= 0)
 
     def get_final_pump_indices(self, res):
         """Retrieve pump indices for the final generation."""
