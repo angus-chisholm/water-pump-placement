@@ -4,9 +4,8 @@ from scipy.interpolate import griddata
 import numpy as np
 
 # Charger les données de la feuille excel
-file_path = 'water-optimization-project\data\Map_village_20241227_data.csv'
+file_path = 'data\Map_village_20241227_data.csv'
 data = pd.read_csv(file_path)
-data.loc[len(data)] = ['Hand Pump',-11.4325061,   10.98203895,370,None,None,None,None,None,None]
 
 # Extraire les coordonnées et types
 types = data['Type']

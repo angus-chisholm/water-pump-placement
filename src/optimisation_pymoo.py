@@ -23,8 +23,8 @@ nb_capita = households['Nb capita'].to_numpy() # Define weight factors for each 
 
 pos_pumps = pumps[['Lon','Lat']].to_numpy() # For f2 (min distance)
 cost_conversion=5000
-cost_standpipe=500
-cost_per_meter=2
+cost_standpipe=1000
+cost_per_meter=6
 consumption_person=5 #L/person/day
 
 def impact(pump_positions, household_positions, household_capita, x = None):
@@ -74,8 +74,8 @@ class MyProblem(ElementwiseProblem):
 
 
 
-        # Define constraint: f1 >= c ## could change to be above initial impact!!
-        c = initial_impact - 0.5
+        # Define constraint: f1 >= c
+        c = initial_impact
         g1 = f1-c
 
         out["F"] = [f1, f2]  # Objective functions
@@ -84,12 +84,17 @@ class MyProblem(ElementwiseProblem):
     def get_final_pump_indices(self, res):
         """Retrieve pump indices for the final generation."""
         self.pump_indices = []
-        for x in res.X:  # Iterate over the final generation's solutions
-            f2_distances = np.zeros(len(pos_pumps))
-            for index, pump in enumerate(pos_pumps):
-                f2_distances[index] = geo.great_circle(pump, x).meters
-            pump_index = np.argmin(f2_distances)
-            self.pump_indices.append(pump_index)
+        if self.pump_specified is not None:
+            # If a pump is specified, use its index directly
+            self.pump_indices = [self.pump_specified] * len(res.X)
+        else:
+            # If no pump is specified, find the closest pump for each solution
+            for x in res.X:  # Iterate over the final generation's solutions
+                f2_distances = np.zeros(len(pos_pumps))
+                for index, pump in enumerate(pos_pumps):
+                    f2_distances[index] = geo.great_circle(pump, x).meters
+                pump_index = np.argmin(f2_distances)
+                self.pump_indices.append(pump_index)
 
 
 def optimise_nsgaII(pump_specified = None):
@@ -121,7 +126,7 @@ def optimise_nsgaII(pump_specified = None):
 
     return res.X, res.F, sol_pumps
 
-pump_specified = 0  # Specify int pump index if constraint is needed
+pump_specified = None  # Specify int pump index if constraint is needed
 sol_pos,sol_val,sol_pumps = optimise_nsgaII(pump_specified) # Specify int pump index if constraint is needed
 
 pos_pumps_new = sol_pos
@@ -137,6 +142,8 @@ fig.show()
 # Find consumption at each standpipe for each possible solution
 
 pos_pumps_with_new = np.array([np.concatenate((pos_pumps,[pump]), axis=0) for j, pump in enumerate(sol_pos)])
+
+
 pump_index_min = np.zeros((len(pos_pumps_with_new),len(pos_households)))
 for i,household in enumerate(pos_households):
     for x in range(len(pos_pumps_with_new)):

@@ -8,7 +8,7 @@ from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
 
 # Charger les données de la feuille excel
-file_path = 'Map_village_20241227_t.xlsx'
+file_path = 'Map_village_20241227_data.xlsx'
 data = pd.read_excel(file_path, sheet_name='Sheet1')
 
 #distinguish type of water source
