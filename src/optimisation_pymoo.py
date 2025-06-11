@@ -119,9 +119,10 @@ def optimise_nsgaII(pump_specified = None):
 
 
     # Plot the Pareto front (objective values)
-    fig = px.scatter(x=res.F[:, 0], y=res.F[:,1], color=res.F[:, 0], labels={'x': 'Impact', 'y': 'Cost'},
-                     title='Pareto Front', color_continuous_scale='Pinkyl')
-    fig.show()
+    # fig = px.scatter(x=res.F[:, 0], y=res.F[:,1], color=res.F[:, 0], labels={'x': 'Impact', 'y': 'Cost'},
+    #                  title='Pareto Front', color_continuous_scale='Pinkyl')
+    # fig.show()
+    
     sol_pumps = np.array(problem.pump_indices)
 
     return res.X, res.F, sol_pumps
@@ -131,6 +132,12 @@ sol_pos,sol_val,sol_pumps = optimise_nsgaII(pump_specified) # Specify int pump i
 
 pos_pumps_new = sol_pos
 
+plt.scatter(sol_val[:0],sol_val[:1],color = sol_val[:,0])
+plt.xlabel('Impact (person-meters)')
+plt.ylabel('Cost (Euros €)')
+plt.title('Pareto Front')
+plt.grid()
+plt.show()
 
 # Plot households and pumps with colorbar based on the first objective function
 fig = px.scatter(x=households['Lon'].to_numpy(), y=households['Lat'].to_numpy(), color_discrete_sequence=['black'], labels={'x': 'Longitude', 'y': 'Latitude'}, title=f'Households and Pumps, existing pump {pump_specified} chosen')
