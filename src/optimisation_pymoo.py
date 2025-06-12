@@ -16,7 +16,7 @@ from plotly.subplots import make_subplots
 
 data_file = r'data\Map_village_20241227_data.csv'
 
-data,households,pumps = read_data(data_file)
+data,households,pumps,open_wells = read_data(data_file)
 
 pos_households = households[['Lon','Lat']].to_numpy() # For f1 (sum of weighted distances)
 nb_capita = households['Nb capita'].to_numpy() # Define weight factors for each distance in pos_households
@@ -132,7 +132,7 @@ sol_pos,sol_val,sol_pumps = optimise_nsgaII(pump_specified) # Specify int pump i
 
 pos_pumps_new = sol_pos
 
-plt.scatter(sol_val[:0],sol_val[:1],color = sol_val[:,0])
+plt.scatter(sol_val[:,0],sol_val[:,1],c = sol_val[:,0])
 plt.xlabel('Impact (person-meters)')
 plt.ylabel('Cost (Euros €)')
 plt.title('Pareto Front')
