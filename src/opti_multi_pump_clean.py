@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 ## Import modules
+=======
+# Import modules
+>>>>>>> af149cc8438ab84afa2eed8f3adb09a215de59c3
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -11,12 +15,20 @@ from pymoo.core.repair import Repair
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.optimize import minimize
 from pymoo.core.problem import ElementwiseProblem
+<<<<<<< HEAD
 from pymoo.operators.mutation.pm import PolynomialMutation as PM
 from pymoo.operators.crossover.sbx import SBX
 import networkx as nx
 import fluids
 import tkinter as tk
 from tkinter import messagebox
+=======
+import networkx as nx
+import fluids
+import tkinter as tk
+from tkinter import messagebox, scrolledtext
+import sys
+>>>>>>> af149cc8438ab84afa2eed8f3adb09a215de59c3
 import traceback
 
 
@@ -64,7 +76,11 @@ def pump_distance(
         household_positions (np.ndarray): 
             Array of [lon, lat] positions of households
         x (np.ndarray, optional): 
+<<<<<<< HEAD
             Positions of potential new standpipes [lon,lat]. Defaults to None.
+=======
+            Position of potential new pump [lon,lat] (only 1). Defaults to None.
+>>>>>>> af149cc8438ab84afa2eed8f3adb09a215de59c3
         
     Returns:
         min_pump_distance (np.ndarray): 
