@@ -76,11 +76,7 @@ def pump_distance(
         household_positions (np.ndarray): 
             Array of [lon, lat] positions of households
         x (np.ndarray, optional): 
-<<<<<<< HEAD
             Positions of potential new standpipes [lon,lat]. Defaults to None.
-=======
-            Position of potential new pump [lon,lat] (only 1). Defaults to None.
->>>>>>> af149cc8438ab84afa2eed8f3adb09a215de59c3
         
     Returns:
         min_pump_distance (np.ndarray): 
