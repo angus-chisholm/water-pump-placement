@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 ## Import modules
-=======
-# Import modules
->>>>>>> af149cc8438ab84afa2eed8f3adb09a215de59c3
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -15,20 +11,12 @@ from pymoo.core.repair import Repair
 from pymoo.algorithms.moo.nsga2 import NSGA2
 from pymoo.optimize import minimize
 from pymoo.core.problem import ElementwiseProblem
-<<<<<<< HEAD
 from pymoo.operators.mutation.pm import PolynomialMutation as PM
 from pymoo.operators.crossover.sbx import SBX
 import networkx as nx
 import fluids
 import tkinter as tk
 from tkinter import messagebox
-=======
-import networkx as nx
-import fluids
-import tkinter as tk
-from tkinter import messagebox, scrolledtext
-import sys
->>>>>>> af149cc8438ab84afa2eed8f3adb09a215de59c3
 import traceback
 
 
@@ -153,82 +141,90 @@ def read_data(file_path):
 
     return data, households, pumps, open_wells
 
-# Pump + pipe flow
-def pipe_and_pump_cost(
-    alt1: float,
-    alt2: float,
-    length_pipe: float,
-    flow_rate: float,
-    pipe_costs: dict,
-    pump_cost_per_watt: float,
-    )-> tuple[float, float, float]:
-    """_summary_
-
-    Args:
-        alt1 (float): 
-            Altitude of point 1 (water start)
-        alt2 (float): 
-            Altitude of point 2 (water end)
-        length_pipe (float): 
-            Length of pipe (m)
-        flow_rate (float): 
-            Max flow rate required (m^3/s)
-        pump_data (dict): 
-            Details of pump(s) used with cost and head increase
-        pipe_costs (dict): 
-            Keys of pipe diameters, values of their cost/m (€/m)
-
-    Returns:
-        tuple[float, float, float]: 
-            Minimum cost at this point, diameter of pipe chosen and nb pumps required
-    """
+def pipe_calcs(alt1, alt2, length_pipe, flow_rate, pipe_costs, pump_cost_per_watt, head_1=0):
     
+    # Pump + pipe flow + cost calculations
     rho = 1000
     g=9.81
     mu = 1e-3
     epsilon = 0.005e-3
     K = 20 # To decide depending on how pipe flows
-
     min_pipe_cost = np.inf
-    diameter_pipe=0
-    pump_power=0
-
+#     diameter_pipe=0
+#     pump_power=0
+    
     for d,cost_pipe in pipe_costs.items():
         V = flow_rate/(np.pi*d**2/4)
+        if V>=1.5:
+            if d == list(pipe_costs.keys())[-1]:
+                Exception(f"Err: No suitable pipe diameter found for flow rate {flow_rate}")
+            continue
         ReD = rho*V*d/mu
-        
         # Darcy friction factor
         f = fluids.friction_factor(Re = ReD,eD = epsilon/d)
         
         # Loss coefficients
         K_f = f*length_pipe/d
-        K_output_flow = 1 # (releasing water to open atmosphere)
-        K_total = K + K_f + K_output_flow
+        K_total = K + K_f
         
-        # Pressure loss using gravity and losses
-        p_loss = rho*g*(alt2-alt1) + 0.5*rho*V**2*K_total
+        # Head change in pipe (negative if head loss)
+        delta_H = (alt1-alt2) - 0.5*(V**2/g)*K_total
+        head_2 = head_1 + delta_H # outlet head without pump
         
         # Total cost using pumps and length of pipe
-        if p_loss<0:
-            total_cost = cost_pipe*length_pipe
+        if head_2 < 3:
+            head_2 = 3 # minimum outlet head (3m)
+            pump_head = head_2 - delta_H - head_1
+            pump_power = rho*g*flow_rate*pump_head*1/0.7 # assuming 70% pump efficiency
+            total_cost = cost_pipe*length_pipe+pump_cost_per_watt*pump_power
         else:
-            total_cost = pump_cost_per_watt*p_loss*flow_rate + cost_pipe*length_pipe
+            # no pump needed
+            pump_head = 0
+            pump_power = 0
+            total_cost = cost_pipe*length_pipe
 
-        # Set the total cost, diameter and number of pumps required
+        # Set the total cost, diameter 
         if total_cost < min_pipe_cost:
             min_pipe_cost = total_cost
             diameter_pipe = d
-            pump_power = p_loss*flow_rate #get pump power required
-        
+            final_pump_power = pump_power
+            final_pump_head = pump_head
+            outlet_head = head_2
+            
+            
     # Return minimum cost for given location
     if not isinstance(min_pipe_cost,float):
         min_pipe_cost.astype(float)
-    if pump_power < 0:
-        head_change = -p_loss/(rho*g)
-    else:
-        head_change = 0
 
-    return min_pipe_cost, diameter_pipe, pump_power, head_change
+    return min_pipe_cost, diameter_pipe, outlet_head, final_pump_power, final_pump_head
+def get_node_families_dfs_by_level(G):
+    """Get nodes grouped by family and level using DFS from root nodes."""
+    # Find all root nodes
+    root_nodes = [node for node in G.nodes() if G.in_degree(node) == 0]
+    
+    families = []
+    
+    for root in root_nodes:
+        family_dict = {}
+        visited = set()
+        
+        def dfs(node, level):
+            if node not in visited:
+                visited.add(node)
+                # Add node to the level dictionary
+                if level not in family_dict:
+                    family_dict[level] = []
+                family_dict[level].append(node)
+                
+                # Recursively visit successors at the next level
+                for successor in G.successors(node):
+                    dfs(successor, level + 1)
+        
+        dfs(root, 0)
+        if family_dict:
+            families.append(family_dict)
+    
+    return families
 
 # Impact functions
 # minimise person-meters
@@ -282,8 +278,6 @@ class TopologyPositionProblem(ElementwiseProblem):
             vars[f"x_{i}"] = Real(bounds=x_bounds)
             vars[f"y_{i}"] = Real(bounds=y_bounds)
             
-        # for i in range(n):
-        #     vars[f"borehole_{i}"] = Binary()        
         
         super().__init__(vars= vars,  # parents + coords
                          n_obj=2,
@@ -308,6 +302,38 @@ class TopologyPositionProblem(ElementwiseProblem):
         self.water_tower_height = kwargs.get("water_tower_height")
         self.pipe_costs = kwargs.get("pipe_costs")
         self.pump_cost_per_watt = kwargs.get("pump_cost_per_watt")
+        
+        
+        self.head = np.zeros(self.n_new_nodes+len(self.fixed_nodes)) # Head at each node (initialise to zero)
+        for i,h in enumerate(self.fixed_heights):
+            self.head[i] = 0 # Assume fixed pumps have 0 head initially
+        
+        
+        self.pipe_data_storage = {}
+        self.chaining_penalty = {}
+        
+        
+    def pipe_and_pump(self, G):
+        
+        for i in self.fixed_nodes:
+            # perform breadth first search from each fixed pump
+            for parent,child in nx.bfs_edges(G, i):
+                q_pipe = (len(nx.descendants(G, child))+1)*0.3/1000  #0.3 L/s per standpipe
+                G[parent][child]['flow_rate'] = q_pipe
+                length_pipe = G[parent][child]['weight']
+                
+                alt1 = G.nodes[parent]['height']
+                head_1 = G.nodes[parent]['head']
+                    
+                alt2 = G.nodes[child]['height']
+                min_pipe_cost, diameter_pipe, outlet_head, pump_power, pump_head=pipe_calcs(
+                    alt1,alt2,length_pipe,q_pipe,self.pipe_costs,self.pump_cost_per_watt, head_1)
+                
+                # Give node and edge attributes for the pressure, pipes etc.
+                G.add_nodes_from([(child,{"head":outlet_head})])
+                G.add_edges_from([(parent,child,{"diameter":diameter_pipe,
+                                                    "pump_power":pump_power,"pump_head":pump_head,"pipe_cost":min_pipe_cost})])
+        return G
     
     def _evaluate(self, X, out, *args, **kwargs):
         """
@@ -318,22 +344,10 @@ class TopologyPositionProblem(ElementwiseProblem):
         n = self.n_new_nodes
         parents = X[:n].astype(int)
         coords = X[n:3*n].reshape(n,2)
-        # parents = np.array([X[f"parent_{i}"] for i in range(n)],dtype=int)
-        # x_coords = np.array([X[f"x_{i}"] for i in range(n)])
-        # y_coords = np.array([X[f"y_{i}"] for i in range(n)])
-        # coords = np.vstack([x_coords,y_coords])
         converted_fixed_pumps = np.zeros(m)
-        pipe_data = np.zeros(shape=(n,6))   # For each new node (and hence pipe),
-                                            # data includes [node_x, node_y, pipe diameter, pump power, head_change, flow rate]
-        # borehole_binaries = np.zeros(n)
-        
-        for i,p in enumerate(parents):
-            if p - m == i:
-                # # If new boreholes are an option
-                # borehole_binaries[i] = 1
-                # Else: don't let a node have itself as a parent
-                out["F"] = [1e6, 1e6]  # large penalty
-                out["pipe_data"] = [pipe_data]
+        pipe_data = []   # Each graph for each solution
+        self.fixed_costs = np.array([0 for _ in self.fixed_nodes]+[self.cost_standpipe for _ in range(self.n_new_nodes)])
+
         
         # Build graph and check validity
         G = nx.DiGraph()
@@ -341,93 +355,189 @@ class TopologyPositionProblem(ElementwiseProblem):
         G.add_nodes_from(all_nodes)
         
         
-        # Add edges child->parent for new nodes
+        # Add edges parent->child for new nodes with length as weight
         for i, p in enumerate(parents):
-            # if borehole_binaries[i] == 0:
-                #if a borehole does NOT exist here
-                child = f"N{i}"
-                if p < len(self.fixed_nodes):
-                    parent = self.fixed_nodes[p]
-                else:
-                    parent = f"N{p - len(self.fixed_nodes)}"
-                G.add_edge(child, parent)
-            # elif borehole_binaries[i] == 1:
-            #     # if a borehole DOES exist
-            #     pass
-            # else:
-            #     print(borehole_binaries[i])
-            #     raise ValueError("Borehole value not 0 or 1")
+            child = f"N{i}"
+            if p < len(self.fixed_nodes):
+                parent = self.fixed_nodes[p]
+                parent_coord = self.fixed_coords[p]
+                self.fixed_costs[p] = self.cost_conversion
+            else:
+                parent = f"N{p - len(self.fixed_nodes)}"
+                parent_coord = coords[p - len(self.fixed_nodes)]
+            
+            coord_new_node = coords[i]
+            length = geo.great_circle(parent_coord, coord_new_node).meters
+            G.add_edge(parent, child, weight=length)
+
                 
-        
         # Check acyclic
         if not nx.is_directed_acyclic_graph(G):
             out["F"] = [1e6, 1e6]  # large penalty
-            out["pipe_data"] = [pipe_data]
             return
         
         # Check connectivity: all new nodes connected to fixed nodes
         for i in range(n):
-            # if borehole_binaries[i] == 0:
-                child = f"N{i}"
-                if not any(nx.has_path(G, child, fn) for fn in self.fixed_nodes):
-                    out["F"] = [1e6, 1e6]
-                    out["pipe_data"] = [pipe_data]
-                    return
-            # else:
-            #     pass
+            child = f"N{i}"
+            if not any(nx.has_path(G, fn, child) for fn in self.fixed_nodes):
+                out["F"] = [1e6, 1e6]
+                return
             
+        # Assign heights, fixed costs and known heads to nodes
+        self.height_new_nodes = np.asarray([self.altitude_interpolator(i) for i in coords])
+        self.all_heights = np.concatenate((self.fixed_heights,self.height_new_nodes))
+        for i, h in enumerate(self.all_heights):
+            G.nodes[all_nodes[i]]['height'] = h
+            G.nodes[all_nodes[i]]['head'] = self.head[i]
+            G.nodes[all_nodes[i]]['fixed_cost'] = self.fixed_costs[i]
+            G.nodes[all_nodes[i]]['coords'] = self.fixed_coords[i] if i < m else coords[i - m]
+        
+        # Display initial graph with all data
+        # self._display_initial_graph(G, all_nodes)
+
         # Compute weighted sum of distances to points in pos_households with all nodes
         f1 = self.impact_fn(self.fixed_coords,self.house_coords,self.house_weights,coords)  # Negative impact calculation with new x location
-        
-        height_new_nodes = np.asarray([self.altitude_interpolator(i) for i in coords])
-        
-        # else:
-        G_rev = G.reverse()
-        f2 = 0
-        for i,p in enumerate(parents):
-            f2 += self.cost_standpipe
-            # if borehole_binaries[i] == 1:
-            #     f2 += self.cost_borehole
-            #     pipe_data[i] = np.ones(shape=(1,4))
-            #     continue
-            coord_new_node = coords[i]
-            alt2 = height_new_nodes[i]
-            child = f"N{i}"
-            
-            if p < m:
-                # Parent is a fixed node
-                parent_coord = self.fixed_coords[p]
-                alt1 = self.fixed_heights[p] + self.water_tower_height
-                
-                if converted_fixed_pumps[p] == 0:
-                    f2 += self.cost_conversion
-                    converted_fixed_pumps[p] = 1
-            else:
-                # Parent is a new node
-                parent_index = p - m
-                parent_coord = coords[parent_index]
-                alt1 = height_new_nodes[parent_index]
 
-            length_pipe = geo.great_circle(parent_coord, coord_new_node).meters
-            descendants = nx.descendants(G_rev, child) # find how many nodes are connected
-            num_descendants = len(descendants)                
-            flow_rate = 1e-3 * (num_descendants+1) # Takes care of additional connections
-            if flow_rate == 0:
-                continue
-            
-            (cost_pipe_and_pumps, diameter_pipe, pump_power, head_change
-                ) = pipe_and_pump_cost(alt1=alt1,alt2=alt2,
-                                    length_pipe=length_pipe,
-                                    flow_rate=flow_rate,
-                                    pipe_costs=self.pipe_costs,
-                                    pump_cost_per_watt=self.pump_cost_per_watt)
+        
+        # Compute cost f2
+        f2 = 0
+        updated_graph = self.pipe_and_pump(G)
+        f2 += np.sum(self.fixed_costs)
+        f2 += sum(nx.get_edge_attributes(updated_graph,'pipe_cost').values())
+        
+        
+        f1 = float(f1)
+        f2 = float(f2)
+        
                 
-            pipe_data[i] = np.array([coord_new_node[0],coord_new_node[1],diameter_pipe, pump_power, head_change, flow_rate])
-            
-            f2 += cost_pipe_and_pumps
+        # Create a hashable key from the solution
+        solution_key = tuple(X.flatten())
+        self.pipe_data_storage[solution_key] = updated_graph
+        
+        
+
         
         out["F"] = [f1, f2]
-        out["pipe_data"] = [pipe_data]
+
+    def _display_initial_graph(self, G, all_nodes):
+        """Display the initial graph with all node and edge data"""
+        plt.close()
+        fig, ax = plt.subplots(figsize=(18, 14))
+        
+        # Create layout with enforced minimum distance
+        try:
+            pos = nx.kamada_kawai_layout(G)
+            # Enforce minimum distance between nodes
+            pos = self._enforce_minimum_distance(pos, min_distance=1.5)
+        except:
+            try:
+                # Fallback to spring layout with very large k for maximum spacing
+                pos = nx.spring_layout(G, k=10, iterations=200, seed=42, scale=3)
+            except:
+                pos = nx.random_layout(G, seed=42)
+        
+        # Draw nodes
+        node_colors = []
+        for node in G.nodes():
+            node = str(node)
+            if node.startswith('F'):
+                node_colors.append('red')  # Fixed pumps in red
+            else:
+                node_colors.append('lightblue')  # New standpipes in light blue
+        
+        nx.draw_networkx_nodes(
+            G, pos, ax=ax,
+            node_color=node_colors,
+            node_size=800,
+            alpha=0.9,
+            linewidths=2
+        )
+        
+        # Draw edges
+        nx.draw_networkx_edges(
+            G, pos, ax=ax,
+            edge_color='gray',
+            arrows=True,
+            arrowsize=20,
+            arrowstyle='->',
+            width=2,
+            connectionstyle="arc3,rad=0.1"
+        )
+        
+        # Create node labels with all node data
+        node_labels = {}
+        for node in G.nodes():
+            node_data = G.nodes[node]
+            height = node_data.get('height', 0)
+            head = node_data.get('head', 0)
+            fixed_cost = node_data.get('fixed_cost', 0)
+            coords = node_data.get('coords', (0, 0))
+            node_labels[node] = f"{node}\nH:{height:.1f}m\nHead:{head:.1f}m\nCost:€{fixed_cost:.0f}\nLon:{coords[0]:.4f}\nLat:{coords[1]:.4f}"
+        
+        nx.draw_networkx_labels(
+            G, pos, node_labels, ax=ax,
+            font_size=7,
+            font_weight='bold'
+        )
+        
+        # Create edge labels with all edge data
+        edge_labels = {}
+        for u, v, data in G.edges(data=True):
+            diameter = data.get('diameter', 'N/A')
+            flow_rate = data.get('flow_rate', 'N/A')
+            length = data.get('weight', 'N/A')
+            pump_power = data.get('pump_power', 'N/A')
+            pipe_cost = data.get('pipe_cost', 'N/A')
+            
+            if isinstance(flow_rate, (int, float)):
+                flow_rate = f"{flow_rate*1000:.2f}L/s"
+            if isinstance(diameter, (int, float)):
+                diameter = f"{diameter:.4f}m"
+            if isinstance(length, (int, float)):
+                length = f"{length:.1f}m"
+            if isinstance(pump_power, (int, float)):
+                pump_power = f"{pump_power:.1f}W"
+            if isinstance(pipe_cost, (int, float)):
+                pipe_cost = f"€{pipe_cost:.2f}"
+            
+            edge_labels[(u, v)] = f"∅:{diameter}\nQ:{flow_rate}\nL:{length}\nPower:{pump_power}\nCost:{pipe_cost}"
+        
+        nx.draw_networkx_edge_labels(
+            G, pos, edge_labels, ax=ax,
+            font_size=6
+        )
+        
+        ax.set_title('Initial Graph - All Node and Edge Data', fontsize=14, fontweight='bold')
+        ax.axis('off')
+        plt.tight_layout()
+        
+        # Show and wait for window to close
+        plt.show()
+    
+    def _enforce_minimum_distance(self, pos, min_distance=1.5):
+        """Enforce minimum distance between nodes by repelling overlapping nodes"""
+        import numpy as np
+        
+        nodes = list(pos.keys())
+        positions = {node: np.array(pos[node]) for node in nodes}
+        
+        # Iteratively push nodes apart if they're too close
+        for _ in range(10):  # Multiple iterations for convergence
+            for i, node1 in enumerate(nodes):
+                for node2 in nodes[i+1:]:
+                    p1 = positions[node1]
+                    p2 = positions[node2]
+                    dist = np.linalg.norm(p1 - p2)
+                    
+                    # If too close, push apart
+                    if dist < min_distance and dist > 0:
+                        direction = (p1 - p2) / dist
+                        adjustment = (min_distance - dist) / 2
+                        positions[node1] += direction * adjustment
+                        positions[node2] -= direction * adjustment
+        
+        return {node: tuple(positions[node]) for node in nodes}
+
 # -------------------------
 # 1) Mixed variable sampler
 # -------------------------
@@ -516,7 +626,7 @@ def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
         pop_size=20,
         sampling=MixedSampler(),
         repair=RoundRepair(),
-        mutation = PM(eta=30),
+        mutation = PM(eta=5),
         crossover=SBX(eta=15,prob=0.9)
     )
     
@@ -525,13 +635,16 @@ def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
                 ('n_gen', kwargs["simulation_generations"]),
                 seed=4,
                 verbose=True)
+    
+    # Retrieve pipe data from storage
+    pipe_data_results = problem.pipe_data_storage
 
-    return res
+    return res, pipe_data_results
 
 class InteractiveParetoPlot:
     def __init__(self, concatenated_result_vals, all_positions, all_result_vals, all_indices, 
                  households, pos_pumps, grid_x, grid_y, grid_z, initial_impact, pipe_data,impactfn,
-                 max_nb_standpipes):
+                 max_nb_standpipes, all_X=None):
         # Store data
         self.concatenated_result_vals = concatenated_result_vals
         self.all_positions = all_positions
@@ -545,10 +658,16 @@ class InteractiveParetoPlot:
         self.initial_impact = initial_impact
         self.pipe_data = pipe_data
         self.impactfn = impactfn
+        self.max_nb_standpipes = max_nb_standpipes
+        self.all_X = all_X if all_X is not None else []
         self.max_nb_standpipes=max_nb_standpipes
+        self.all_X = all_X if all_X is not None else []
         
-        # Create figure and axes
-        self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(11, 5))
+        # Create figure with 3 subplots: Pareto, Map, and Network Graph
+        self.fig = plt.figure(figsize=(16, 5))
+        self.ax1 = plt.subplot(1, 3, 1)  # Pareto front
+        self.ax2 = plt.subplot(1, 3, 2)  # Geographical map
+        self.ax3 = plt.subplot(1, 3, 3)  # Network graph
         
         # Store references to plot elements for highlighting
         self.pareto_scatter = None
@@ -695,7 +814,7 @@ class InteractiveParetoPlot:
                                 parent_coord = self.pos_pumps[x]
                             else:
                                 x = int(self.all_indices[n][j,i] - len(self.pos_pumps))
-                                if x < len(pos_pumps_new_plot):
+                                if x < len(self.all_positions[n]):
                                     parent_coord = self.all_positions[n][j,2*x:2*(x+1)]
                                 else:
                                     continue
@@ -765,11 +884,18 @@ class InteractiveParetoPlot:
                     self.clear_highlighting()
                     self.current_hover_idx = None
     
-    def get_pipe_data_text(self, config_idx, solution_in_config):
+    def get_pipe_data_text(self, config_idx, solution_in_config, solution_X=None):
         """Get formatted pipe data text for display"""
         try:
-            # Access the pipe data for this specific solution
-            data = self.pipe_data[config_idx][solution_in_config][0]
+            # Access the pipe data using id(solution_X) if available
+            if solution_X is not None:
+                solution_key = tuple(solution_X.flatten())
+
+                if solution_key in self.pipe_data[config_idx]:
+                    data = self.pipe_data[config_idx][solution_key]
+                    return data
+            # Fallback to index-based access
+            data = self.pipe_data[config_idx][solution_in_config]
             return data
             
         except (IndexError, KeyError, TypeError):
@@ -783,16 +909,18 @@ class InteractiveParetoPlot:
         cumulative_solutions = 0
         config_idx = None
         solution_in_config = None
+        solution_X = None
         
         for n, k in enumerate(self.n_tested):
             num_solutions = len(self.all_result_vals[n])
             if cumulative_solutions <= solution_idx < cumulative_solutions + num_solutions:
                 config_idx = n
                 solution_in_config = solution_idx - cumulative_solutions
+                solution_X = self.all_X[n][solution_in_config]
                 break
             cumulative_solutions += num_solutions
         
-        if config_idx is not None and solution_in_config is not None:
+        if config_idx is not None and solution_in_config is not None and solution_X is not None:
             # Highlight pumps for this specific solution
             pump_config_idx = 0
             for n in range(config_idx + 1):
@@ -830,19 +958,35 @@ class InteractiveParetoPlot:
                     pump_config_idx += k
             
             # Show data box
-            self.show_data_box(config_idx, solution_in_config)
+            self.show_data_box(config_idx, solution_in_config, solution_X)
             
             # Refresh the plot
             self.fig.canvas.draw_idle()
     
-    def show_data_box(self, config_idx, solution_in_config):
+    def show_data_box(self, config_idx, solution_in_config, solution_X=None):
         """Show data box with pipe information"""
         # Get the formatted data text
-        data_text = self.get_pipe_data_text(config_idx, solution_in_config)
-        
+        data_graph = self.get_pipe_data_text(config_idx, solution_in_config, solution_X)
+        families = get_node_families_dfs_by_level(data_graph)
         data_string = ""
-        for data_item in data_text:
-            data_string += f"Lon: {data_item[0]:.3f}, Lat: {data_item[1]:.3f}, Diameter: {data_item[2]:.3f}m, Power: {data_item[3]:.3f}W, \n Head Change: {data_item[4]:.3f}m, Flow Rate: {data_item[5]*1000:.3f}L/s; \n"
+        for i, family in enumerate(families):
+            for level, nodes in family.items():
+                for node in nodes:
+                    node = str(node)
+                    if node.startswith('N'):
+                        node_data = data_graph.nodes[node]
+                        parent = list(data_graph.predecessors(node))[0]
+                        edge_data = data_graph.get_edge_data(parent, node)
+                        
+                        lon, lat = node_data['coords']
+                        standpipe_head = node_data['head']
+                        diameter = edge_data['diameter']
+                        pump_power = edge_data['pump_power']
+                        pump_head = edge_data['pump_head']
+                        flow_rate = edge_data['flow_rate']*1000  # convert to L/s
+                        
+                        data_string += f"Lon: {lon:.3f}, Lat: {lat:.3f}, Standpipe head: {standpipe_head:.3f}m, \n Diameter: {diameter:.3f}m, Power: {pump_power:.3f}W, Head Change: {pump_head:.3f}m, Flow Rate: {flow_rate:.3f}L/s; \n"
+        
         
         # Create box properties
         props = dict(boxstyle='round', facecolor='lightblue', alpha=0.8, edgecolor='black')
@@ -862,6 +1006,9 @@ class InteractiveParetoPlot:
             bbox=props,
             zorder=15
         )
+        
+        # Draw the network graph
+        self.draw_network_graph(config_idx, solution_in_config, solution_X)
     
     def hide_data_box(self):
         """Hide the data box"""
@@ -886,8 +1033,118 @@ class InteractiveParetoPlot:
         # Hide data box
         self.hide_data_box()
         
+        # Clear graph plot
+        self.ax3.clear()
+        
         # Refresh the plot
         self.fig.canvas.draw_idle()
+    
+    def draw_network_graph(self, config_idx, solution_in_config, solution_X=None):
+        """Draw the network graph on ax3"""
+        # Clear previous graph
+        self.ax3.clear()
+        
+        # Get the graph
+        graph = self.get_pipe_data_text(config_idx, solution_in_config, solution_X)
+        
+        if graph is None or len(graph.nodes()) == 0:
+            self.ax3.text(0.5, 0.5, "No graph data", ha='center', va='center')
+            self.ax3.set_xlim(0, 1)
+            self.ax3.set_ylim(0, 1)
+            return
+        
+        # Calculate edge weights based on length for spring layout
+        edge_weights = {}
+        for u, v, data in graph.edges(data=True):
+            length = data.get('length', 1)  # Default to 1 if not present
+            edge_weights[(u, v)] = 1.0 / max(length, 0.1)  # Inverse relationship
+        
+        # Create layout for the graph with weights
+        try:
+            # Use spring layout with edge weights affecting distance
+            pos = nx.spring_layout(graph, k=2, iterations=50, seed=42, weight=None)
+        except:
+            # Fallback to random layout if spring layout fails
+            pos = nx.random_layout(graph, seed=42)
+        
+        # Draw nodes
+        node_colors = []
+        for node in graph.nodes():
+            node = str(node)
+            if node.startswith('F'):
+                node_colors.append('red')  # Fixed pumps in red
+            else:
+                node_colors.append('lightblue')  # New standpipes in light blue
+        
+        nx.draw_networkx_nodes(
+            graph, pos, ax=self.ax3,
+            node_color=node_colors,
+            node_size=500,
+            alpha=0.9,
+            linewidths=2
+        )
+        
+        # Calculate edge widths based on diameter (larger diameter = thicker line)
+        edge_widths = []
+        for u, v, data in graph.edges(data=True):
+            diameter = data.get('diameter', 0.02)  # meters
+            width = max(0.9, diameter * 100)  # Scale diameter to line width
+            edge_widths.append(width)
+        
+        # Draw edges
+        nx.draw_networkx_edges(
+            graph, pos, ax=self.ax3,
+            edge_color='gray',
+            arrows=True,
+            arrowsize=20,
+            arrowstyle='->',
+            width=edge_widths,
+            connectionstyle="arc3,rad=0.1"
+        )
+        # Create node labels with all node data
+        node_labels = {}
+        for node in graph.nodes():
+            node_data = graph.nodes[node]
+            head = node_data.get('head', 0)
+            fixed_cost = node_data.get('fixed_cost', 0)
+            coords = node_data.get('coords', (0, 0))
+            node_labels[node] = f"{node}\nHead:{head:.1f}m\nCost:€{fixed_cost:.0f}\nLon:{coords[0]:.4f}\nLat:{coords[1]:.4f}"
+        
+        nx.draw_networkx_labels(
+            graph, pos, node_labels, ax=self.ax3,
+            font_size=7,
+        )
+        
+        # Create edge labels with all edge data
+        edge_labels = {}
+        for u, v, data in graph.edges(data=True):
+            diameter = data.get('diameter', 'N/A')
+            flow_rate = data.get('flow_rate', 'N/A')
+            length = data.get('weight', 'N/A')
+            pump_power = data.get('pump_power', 'N/A')
+            pipe_cost = data.get('pipe_cost', 'N/A')
+            
+            if isinstance(flow_rate, (int, float)):
+                flow_rate = f"{flow_rate*1000:.2f}L/s"
+            if isinstance(diameter, (int, float)):
+                diameter = f"{diameter:.4f}m"
+            if isinstance(length, (int, float)):
+                length = f"{length:.1f}m"
+            if isinstance(pump_power, (int, float)):
+                pump_power = f"{pump_power:.1f}W"
+            if isinstance(pipe_cost, (int, float)):
+                pipe_cost = f"€{pipe_cost:.2f}"
+            
+            edge_labels[(u, v)] = f"∅:{diameter}\nQ:{flow_rate}\nL:{length}\nPower:{pump_power}\nCost:{pipe_cost}"
+        
+        nx.draw_networkx_edge_labels(
+            graph, pos, edge_labels, ax=self.ax3,
+            font_size=6
+        )
+        
+        
+        self.ax3.set_title('Pipe Network Topology', fontsize=12, fontweight='bold')
+        self.ax3.axis('off')
     
     def show(self):
         """Display the interactive plot"""
@@ -904,20 +1161,19 @@ def run_optimisation_and_plot():
     """
     try:       
         
+        labour_and_fixed_pipe = 3 #€/m
+        
         gui_kwargs = {
             "cost_conversion" : float(entry_widgets["Conversion Cost (€)"].get()),
             "cost_standpipe" : float(entry_widgets["Standpipe Cost (€)"].get()),
-            "cost_borehole" : float(entry_widgets["Borehole Cost (€)"].get()),
-            "consumption_person":float(entry_widgets["Per Capita Consumption (L/pers/day)"].get()), 
             "pump_cost_per_watt" : float(entry_widgets["Pump Cost (€/W)"].get()),
             "simulation_generations": int(entry_widgets["Number of Generations"].get()),
-            "pipe_costs" : { # keys are pipe diameters, values are pipe costs €/m (source AO_GRP.1_GALLON_DUVAL_ROBILLOT_JIMENEZ)
-                0.02: 0.65,
-                0.025: 1.5,
-                0.032: 2.69,
-                0.04: 3.5,
-                0.05: 5,
-                0.06: 5,
+            "pipe_costs" : { # keys are pipe diameters, values are pipe costs €/m (source https://www.siobati.com/boutique/tuyau-pression-pvc-pn10/)
+                0.032: 1.27+labour_and_fixed_pipe,
+                0.04: 1.78+labour_and_fixed_pipe,
+                0.05: 3.30+labour_and_fixed_pipe,
+                0.063: 2.90+labour_and_fixed_pipe,
+                0.09: 5.59+labour_and_fixed_pipe,
             },
             "water_tower_height" : 4,
         }
@@ -950,20 +1206,21 @@ def run_optimisation_and_plot():
         all_result_vals = []
         all_indices = []
         all_positions = []
-        all_boreholes = []
+        all_X = []
         pipe_data = []
         for i in range(1,max_nb_standpipes+1):
-            res = calculate_optimal_placement(pumps.index.to_list(), pos_pumps,
+            res, res_pipe_data = calculate_optimal_placement(pumps.index.to_list(), pos_pumps,
                                             pumps['Altitude'].to_numpy(), pos_households,
                                             nb_capita, i, bounds, impactfn, get_alt,
                                             **gui_kwargs)
             all_result_vals.append(res.F)
             all_indices.append(res.X[:,:i])
             all_positions.append(res.X[:,i:3*i])
-            #all_boreholes.append(res.X[:,3*i:4*i])
-            pipe_data.append(res.pop.get("pipe_data"))
+            all_X.append(res.X)
+            pipe_data.append(res_pipe_data)
             
         concatenated_result_vals = np.concatenate(all_result_vals)
+        
         
         
         # Set up plot
@@ -971,14 +1228,22 @@ def run_optimisation_and_plot():
             concatenated_result_vals, all_positions, all_result_vals, all_indices,
             households, pos_pumps, grid_x, grid_y, grid_z, 
             impactfn(pos_pumps, pos_households, nb_capita),
-            pipe_data,impactfn, max_nb_standpipes
+            pipe_data, impactfn, max_nb_standpipes, all_X
         )
 
         # Show the plot
         interactive_plot.show()    
     
-    except ValueError:
+    except ValueError as e:
             messagebox.showerror("Invalid Input", "Please enter valid numbers.")
+            # 1. Get the full traceback as a formatted string
+            error_details = traceback.format_exc()
+            
+            # 2. Display the error message AND the traceback details
+            messagebox.showerror(
+                "Fatal Error in Optimization",
+                f"An error occurred: {e}\n\n--- Traceback Details ---\n{error_details}"
+            )
     except Exception as e:
         messagebox.showerror("Error", f"An error occurred: {e}")
         # 1. Get the full traceback as a formatted string
@@ -1028,8 +1293,6 @@ def main():
     default_kwargs = {
         "Conversion Cost (€)" : 5000,
         "Standpipe Cost (€)" : 1000,
-        "Borehole Cost (€)" : 15000,
-        "Per Capita Consumption (L/pers/day)":14, #L/person/day
         "Pump Cost (€/W)" : 1, # €/W Estimated! Needs verifying
         "Number of Generations": 100,
         "Maximum Number of Standpipes": 3,
