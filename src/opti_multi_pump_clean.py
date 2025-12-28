@@ -64,7 +64,7 @@ def pump_distance(
         household_positions (np.ndarray): 
             Array of [lon, lat] positions of households
         x (np.ndarray, optional): 
-            Positions of potential new standpipes [lon,lat]. Defaults to None.
+            Positions of potential new Fountains [lon,lat]. Defaults to None.
         
     Returns:
         min_pump_distance (np.ndarray): 
@@ -297,13 +297,14 @@ class TopologyPositionProblem(ElementwiseProblem):
         self.altitude_interpolator = altitude_interpolator
         
         #kwargs
-        self.cost_standpipe = kwargs.get("cost_standpipe")
+        self.cost_fountain = kwargs.get("cost_fountain")
         self.cost_conversion = kwargs.get("cost_conversion")
         self.water_tower_height = kwargs.get("water_tower_height")
         self.pipe_costs = kwargs.get("pipe_costs")
         self.pump_cost_per_watt = kwargs.get("pump_cost_per_watt")
         
         
+        self.fixed_heights = self.fixed_heights + self.water_tower_height
         self.head = np.zeros(self.n_new_nodes+len(self.fixed_nodes)) # Head at each node (initialise to zero)
         for i,h in enumerate(self.fixed_heights):
             self.head[i] = 0 # Assume fixed pumps have 0 head initially
@@ -318,7 +319,7 @@ class TopologyPositionProblem(ElementwiseProblem):
         for i in self.fixed_nodes:
             # perform breadth first search from each fixed pump
             for parent,child in nx.bfs_edges(G, i):
-                q_pipe = (len(nx.descendants(G, child))+1)*0.3/1000  #0.3 L/s per standpipe
+                q_pipe = (len(nx.descendants(G, child))+1)*0.3/1000  #0.3 L/s per fountain
                 G[parent][child]['flow_rate'] = q_pipe
                 length_pipe = G[parent][child]['weight']
                 
@@ -346,7 +347,7 @@ class TopologyPositionProblem(ElementwiseProblem):
         coords = X[n:3*n].reshape(n,2)
         converted_fixed_pumps = np.zeros(m)
         pipe_data = []   # Each graph for each solution
-        self.fixed_costs = np.array([0 for _ in self.fixed_nodes]+[self.cost_standpipe for _ in range(self.n_new_nodes)])
+        self.fixed_costs = np.array([0 for _ in self.fixed_nodes]+[self.cost_fountain for _ in range(self.n_new_nodes)])
 
         
         # Build graph and check validity
@@ -443,7 +444,7 @@ class TopologyPositionProblem(ElementwiseProblem):
             if node.startswith('F'):
                 node_colors.append('red')  # Fixed pumps in red
             else:
-                node_colors.append('lightblue')  # New standpipes in light blue
+                node_colors.append('lightblue')  # New fountains in light blue
         
         nx.draw_networkx_nodes(
             G, pos, ax=ax,
@@ -644,7 +645,7 @@ def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
 class InteractiveParetoPlot:
     def __init__(self, concatenated_result_vals, all_positions, all_result_vals, all_indices, 
                  households, pos_pumps, grid_x, grid_y, grid_z, initial_impact, pipe_data,impactfn,
-                 max_nb_standpipes, all_X=None):
+                 max_nb_fountains, all_X=None):
         # Store data
         self.concatenated_result_vals = concatenated_result_vals
         self.all_positions = all_positions
@@ -658,16 +659,18 @@ class InteractiveParetoPlot:
         self.initial_impact = initial_impact
         self.pipe_data = pipe_data
         self.impactfn = impactfn
-        self.max_nb_standpipes = max_nb_standpipes
-        self.all_X = all_X if all_X is not None else []
-        self.max_nb_standpipes=max_nb_standpipes
+        self.max_nb_fountains = max_nb_fountains
         self.all_X = all_X if all_X is not None else []
         
-        # Create figure with 3 subplots: Pareto, Map, and Network Graph
-        self.fig = plt.figure(figsize=(16, 5))
-        self.ax1 = plt.subplot(1, 3, 1)  # Pareto front
-        self.ax2 = plt.subplot(1, 3, 2)  # Geographical map
-        self.ax3 = plt.subplot(1, 3, 3)  # Network graph
+        # Create separate figures for each plot
+        self.fig1, self.ax1 = plt.subplots(figsize=(10, 6))  # Pareto front
+        self.fig1.suptitle('Pareto Front')
+        
+        self.fig2, self.ax2 = plt.subplots(figsize=(12, 10))  # Geographical map
+        self.fig2.suptitle('Geographical Map')
+        
+        self.fig3, self.ax3 = plt.subplots(figsize=(10, 8))  # Network graph
+        self.fig3.suptitle('Network Topology')
         
         # Store references to plot elements for highlighting
         self.pareto_scatter = None
@@ -676,7 +679,7 @@ class InteractiveParetoPlot:
         self.highlighted_pumps = []
         self.highlighted_lines = []
         self.data_box = None  # Single data box that gets updated
-        self.n_tested = np.arange(1,self.max_nb_standpipes+1,dtype=int)
+        self.n_tested = np.arange(1,self.max_nb_fountains+1,dtype=int)
         
         # Current hover index
         self.current_hover_idx = None
@@ -703,7 +706,7 @@ class InteractiveParetoPlot:
                     vmax=0,
                     edgecolor='k',
                     s=20,
-                    label=f'{k} new standpipes',
+                    label=f'{k} new fountains',
                     marker=n_shape.get(k,'s'),
                 )
                 self.pareto_scatters.append(scatter)
@@ -721,7 +724,7 @@ class InteractiveParetoPlot:
                     vmax=0,
                     edgecolor='k',
                     s=20,
-                    label=f'{k} new standpipes',
+                    label=f'{k} new fountains',
                     marker=n_shape.get(k,'s'),
                 )
                 self.pareto_scatters.append(scatter)
@@ -734,12 +737,12 @@ class InteractiveParetoPlot:
         self.ax1.grid(True)
         
         # === GEOGRAPHICAL PLOT (ax2) ===
-        contour = self.ax2.contourf(self.grid_x, self.grid_y, self.grid_z, levels=20, cmap='terrain')
+        contour = self.ax2.contourf(self.grid_x, self.grid_y, self.grid_z, levels=5, cmap='terrain')
         
         # Plot households (black dots)
         self.ax2.scatter(self.households['Lon'], self.households['Lat'], color='black', label='Households')
         
-        # Plot new standpipes and store references
+        # Plot new fountains and store references
         pump_idx = 0  # Index to track pumps across all configurations
         
         for n, k in enumerate(self.n_tested):
@@ -754,7 +757,7 @@ class InteractiveParetoPlot:
                         vmin=50,
                         vmax=100,
                         s=60,
-                        label='New Standpipes' if pump_idx == 0 else "",
+                        label='New fountains' if pump_idx == 0 else "",
                         marker=n_shape.get(k,'s'),
                         alpha=0.5
                     )
@@ -798,7 +801,7 @@ class InteractiveParetoPlot:
                         vmin=-100,
                         vmax=0,
                         s=60,
-                        label='New Standpipes' if pump_idx == 0 else "",
+                        label='New fountains' if pump_idx == 0 else "",
                         marker=n_shape.get(k,'s'),
                         alpha=0.5
                     )
@@ -836,13 +839,13 @@ class InteractiveParetoPlot:
         self.ax2.scatter(self.pos_pumps[:, 0], self.pos_pumps[:, 1], 
                         color='red', label='Previous Pumps', edgecolors='k', s=90)
         
-        # Add colorbar
-        if len(self.pump_scatters) > 0:
-            cbar = self.fig.colorbar(self.pareto_scatters[-1], ax=self.ax2)
-            if self.impactfn==impact2:
-                cbar.set_label('% of people within 30 mins')
-            else:
-                cbar.set_label('Impact (thousand person-meters)')
+        # # Add colorbar
+        # if len(self.pump_scatters) > 0:
+        #     cbar = self.fig.colorbar(self.pareto_scatters[-1], ax=self.ax2)
+        #     if self.impactfn==impact2:
+        #         cbar.set_label('% of people within 30 mins')
+        #     else:
+        #         cbar.set_label('Impact (thousand person-meters)')
         
         # Labels and title
         self.ax2.set_xlabel('Longitude')
@@ -851,11 +854,13 @@ class InteractiveParetoPlot:
         self.ax2.legend()
         self.ax2.grid(True)
         
-        plt.tight_layout()
+        self.fig1.tight_layout()
+        self.fig2.tight_layout()
+        self.fig3.tight_layout()
     
     def connect_events(self):
-        """Connect mouse events"""
-        self.fig.canvas.mpl_connect('motion_notify_event', self.on_hover)
+        """Connect mouse events to the Pareto plot figure"""
+        self.fig1.canvas.mpl_connect('motion_notify_event', self.on_hover)
     
     def on_hover(self, event):
         """Handle hover events over the Pareto plot"""
@@ -960,8 +965,9 @@ class InteractiveParetoPlot:
             # Show data box
             self.show_data_box(config_idx, solution_in_config, solution_X)
             
-            # Refresh the plot
-            self.fig.canvas.draw_idle()
+            # Refresh all plots
+            self.fig2.canvas.draw_idle()
+            self.fig3.canvas.draw_idle()
     
     def show_data_box(self, config_idx, solution_in_config, solution_X=None):
         """Show data box with pipe information"""
@@ -979,13 +985,13 @@ class InteractiveParetoPlot:
                         edge_data = data_graph.get_edge_data(parent, node)
                         
                         lon, lat = node_data['coords']
-                        standpipe_head = node_data['head']
+                        fountain_head = node_data['head']
                         diameter = edge_data['diameter']
                         pump_power = edge_data['pump_power']
                         pump_head = edge_data['pump_head']
                         flow_rate = edge_data['flow_rate']*1000  # convert to L/s
                         
-                        data_string += f"Lon: {lon:.3f}, Lat: {lat:.3f}, Standpipe head: {standpipe_head:.3f}m, \n Diameter: {diameter:.3f}m, Power: {pump_power:.3f}W, Head Change: {pump_head:.3f}m, Flow Rate: {flow_rate:.3f}L/s; \n"
+                        data_string += f"Lon: {lon:.3f}, Lat: {lat:.3f}, Fountain head: {fountain_head:.3f}m, \n Diameter: {diameter:.3f}m, Power: {pump_power:.3f}W, Head Change: {pump_head:.3f}m, Flow Rate: {flow_rate:.3f}L/s; \n"
         
         
         # Create box properties
@@ -993,7 +999,7 @@ class InteractiveParetoPlot:
         
         # Add solution info to the text
         k = self.n_tested[config_idx]
-        header = f"Solution {self.current_hover_idx}\n{k} standpipe{'s' if k > 1 else ''}\n---\n"
+        header = f"Solution {self.current_hover_idx}\n{k} Fountain{'s' if k > 1 else ''}\n---\n"
         full_text = header + data_string
         
         # Place text box in upper left of geographical plot
@@ -1036,8 +1042,9 @@ class InteractiveParetoPlot:
         # Clear graph plot
         self.ax3.clear()
         
-        # Refresh the plot
-        self.fig.canvas.draw_idle()
+        # Refresh all plots
+        self.fig2.canvas.draw_idle()
+        self.fig3.canvas.draw_idle()
     
     def draw_network_graph(self, config_idx, solution_in_config, solution_X=None):
         """Draw the network graph on ax3"""
@@ -1074,7 +1081,7 @@ class InteractiveParetoPlot:
             if node.startswith('F'):
                 node_colors.append('red')  # Fixed pumps in red
             else:
-                node_colors.append('lightblue')  # New standpipes in light blue
+                node_colors.append('lightblue')  # New fountains in light blue
         
         nx.draw_networkx_nodes(
             graph, pos, ax=self.ax3,
@@ -1165,7 +1172,7 @@ def run_optimisation_and_plot():
         
         gui_kwargs = {
             "cost_conversion" : float(entry_widgets["Conversion Cost (€)"].get()),
-            "cost_standpipe" : float(entry_widgets["Standpipe Cost (€)"].get()),
+            "cost_fountain" : float(entry_widgets["Fountain Cost (€)"].get()),
             "pump_cost_per_watt" : float(entry_widgets["Pump Cost (€/W)"].get()),
             "simulation_generations": int(entry_widgets["Number of Generations"].get()),
             "pipe_costs" : { # keys are pipe diameters, values are pipe costs €/m (source https://www.siobati.com/boutique/tuyau-pression-pvc-pn10/)
@@ -1178,7 +1185,7 @@ def run_optimisation_and_plot():
             "water_tower_height" : 4,
         }
         impactfn = impact_dict[entry_widgets["Impact Function"].get()]
-        max_nb_standpipes = int(entry_widgets["Maximum Number of Standpipes"].get())
+        max_nb_fountains = int(entry_widgets["Maximum Number of Fountains"].get())
     
         # Setup data
         
@@ -1208,7 +1215,7 @@ def run_optimisation_and_plot():
         all_positions = []
         all_X = []
         pipe_data = []
-        for i in range(1,max_nb_standpipes+1):
+        for i in range(1,max_nb_fountains+1):
             res, res_pipe_data = calculate_optimal_placement(pumps.index.to_list(), pos_pumps,
                                             pumps['Altitude'].to_numpy(), pos_households,
                                             nb_capita, i, bounds, impactfn, get_alt,
@@ -1223,12 +1230,13 @@ def run_optimisation_and_plot():
         
         
         
+        
         # Set up plot
         interactive_plot = InteractiveParetoPlot(
             concatenated_result_vals, all_positions, all_result_vals, all_indices,
             households, pos_pumps, grid_x, grid_y, grid_z, 
             impactfn(pos_pumps, pos_households, nb_capita),
-            pipe_data, impactfn, max_nb_standpipes, all_X
+            pipe_data, impactfn, max_nb_fountains, all_X
         )
 
         # Show the plot
@@ -1254,9 +1262,6 @@ def run_optimisation_and_plot():
             "Fatal Error in Optimization",
             f"An error occurred: {e}\n\n--- Traceback Details ---\n{error_details}"
         )
-        
-        # You can also print the traceback to the terminal for debugging
-        print(error_details)
 
 
 # GUI functions
@@ -1291,11 +1296,12 @@ def main():
     """  
     # Define values
     default_kwargs = {
-        "Conversion Cost (€)" : 5000,
-        "Standpipe Cost (€)" : 1000,
+        "Conversion Cost (€)" : 8000,
+        "Fountain Cost (€)" : 700,
         "Pump Cost (€/W)" : 1, # €/W Estimated! Needs verifying
         "Number of Generations": 100,
-        "Maximum Number of Standpipes": 3,
+        "Maximum Number of Fountains": 3,
+        "Water Tower Height (m)" : 4,
     }
     root,main_frame = create_gui()
     row_num=0 
@@ -1307,7 +1313,6 @@ def main():
     tk.Label(main_frame, text='Impact Function').grid(row=row_num, column=0, sticky="w")
     dropdown = tk.OptionMenu(main_frame, entry_widgets['Impact Function'], *list(impact_dict.keys()))
     dropdown.grid(row=row_num, column=1)
-    print(list(impact_dict.keys()))
 
         
         
