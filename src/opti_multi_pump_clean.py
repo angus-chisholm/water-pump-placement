@@ -148,10 +148,8 @@ def pipe_calcs(alt1, alt2, length_pipe, flow_rate, pipe_costs, pump_cost_per_wat
     g=9.81
     mu = 1e-3
     epsilon = 0.005e-3
-    K = 20 # To decide depending on how pipe flows
+    K = 17.95 ## 1 gate valve (for isolation), 1 check valve (to prevent backflow), 10 90o elbows, and 10 union connectors
     min_pipe_cost = np.inf
-#     diameter_pipe=0
-#     pump_power=0
     
     for d,cost_pipe in pipe_costs.items():
         V = flow_rate/(np.pi*d**2/4)
@@ -624,11 +622,11 @@ def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
     xl, xu, var_items = attach_numeric_bounds(problem)
     
     algorithm = NSGA2(
-        pop_size=20,
+        pop_size=50,
         sampling=MixedSampler(),
         repair=RoundRepair(),
         mutation = PM(eta=5),
-        crossover=SBX(eta=15,prob=0.9)
+        crossover=SBX(eta=10,prob=0.9)
     )
     
     res = minimize(problem,
