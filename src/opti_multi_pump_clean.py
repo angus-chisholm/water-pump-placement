@@ -423,17 +423,26 @@ class TopologyPositionProblem(ElementwiseProblem):
         plt.close()
         fig, ax = plt.subplots(figsize=(18, 14))
         
-        # Create layout with enforced minimum distance
-        try:
-            pos = nx.kamada_kawai_layout(G)
-            # Enforce minimum distance between nodes
-            pos = self._enforce_minimum_distance(pos, min_distance=1.5)
-        except:
-            try:
-                # Fallback to spring layout with very large k for maximum spacing
-                pos = nx.spring_layout(G, k=10, iterations=200, seed=42, scale=3)
-            except:
-                pos = nx.random_layout(G, seed=42)
+        # Create layout using geographic coordinates scaled by edge weights
+        pos = {}
+        for node in G.nodes():
+            coords = G.nodes[node].get('coords', (0, 0))
+            pos[node] = np.array(coords)
+        
+        # Scale positions based on edge lengths to make arrow length proportional to weight
+        # Find the maximum distance between any two connected nodes to normalize
+        max_distance = 0
+        distances = {}
+        for u, v, data in G.edges(data=True):
+            dist = np.linalg.norm(pos[u] - pos[v])
+            distances[(u, v)] = dist
+            max_distance = max(max_distance, dist)
+        
+        # Normalize positions so that edge lengths are proportional to their weight (length)
+        if max_distance > 0:
+            scale_factor = 1.0 / max_distance
+            for node in pos:
+                pos[node] = pos[node] * scale_factor
         
         # Draw nodes
         node_colors = []
@@ -452,7 +461,7 @@ class TopologyPositionProblem(ElementwiseProblem):
             linewidths=2
         )
         
-        # Draw edges
+        # Draw edges with straight arrows
         nx.draw_networkx_edges(
             G, pos, ax=ax,
             edge_color='gray',
@@ -460,7 +469,7 @@ class TopologyPositionProblem(ElementwiseProblem):
             arrowsize=20,
             arrowstyle='->',
             width=2,
-            connectionstyle="arc3,rad=0.1"
+            connectionstyle="arc3,rad=0"
         )
         
         # Create node labels with all node data
@@ -476,7 +485,6 @@ class TopologyPositionProblem(ElementwiseProblem):
         nx.draw_networkx_labels(
             G, pos, node_labels, ax=ax,
             font_size=7,
-            font_weight='bold'
         )
         
         # Create edge labels with all edge data
@@ -1058,19 +1066,26 @@ class InteractiveParetoPlot:
             self.ax3.set_ylim(0, 1)
             return
         
-        # Calculate edge weights based on length for spring layout
-        edge_weights = {}
-        for u, v, data in graph.edges(data=True):
-            length = data.get('length', 1)  # Default to 1 if not present
-            edge_weights[(u, v)] = 1.0 / max(length, 0.1)  # Inverse relationship
+        # Create layout using geographic coordinates scaled by edge weights
+        pos = {}
+        for node in graph.nodes():
+            coords = graph.nodes[node].get('coords', (0, 0))
+            pos[node] = np.array(coords)
         
-        # Create layout for the graph with weights
-        try:
-            # Use spring layout with edge weights affecting distance
-            pos = nx.spring_layout(graph, k=2, iterations=50, seed=42, weight=None)
-        except:
-            # Fallback to random layout if spring layout fails
-            pos = nx.random_layout(graph, seed=42)
+        # Scale positions based on edge lengths to make arrow length proportional to weight
+        # Find the maximum distance between any two connected nodes to normalize
+        max_distance = 0
+        distances = {}
+        for u, v, data in graph.edges(data=True):
+            dist = np.linalg.norm(pos[u] - pos[v])
+            distances[(u, v)] = dist
+            max_distance = max(max_distance, dist)
+        
+        # Normalize positions so that edge lengths are proportional to their weight (length)
+        if max_distance > 0:
+            scale_factor = 1.0 / max_distance
+            for node in pos:
+                pos[node] = pos[node] * scale_factor
         
         # Draw nodes
         node_colors = []
@@ -1096,7 +1111,7 @@ class InteractiveParetoPlot:
             width = max(0.9, diameter * 100)  # Scale diameter to line width
             edge_widths.append(width)
         
-        # Draw edges
+        # Draw edges with straight arrows
         nx.draw_networkx_edges(
             graph, pos, ax=self.ax3,
             edge_color='gray',
@@ -1104,7 +1119,7 @@ class InteractiveParetoPlot:
             arrowsize=20,
             arrowstyle='->',
             width=edge_widths,
-            connectionstyle="arc3,rad=0.1"
+            connectionstyle="arc3,rad=0"
         )
         # Create node labels with all node data
         node_labels = {}
