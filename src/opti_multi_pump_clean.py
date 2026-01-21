@@ -1174,6 +1174,9 @@ class InteractiveParetoPlot:
 
 entry_widgets = {}
 
+def save_output():
+    
+
 def run_optimisation_and_plot():
     
     """
@@ -1241,7 +1244,7 @@ def run_optimisation_and_plot():
             
         concatenated_result_vals = np.concatenate(all_result_vals)
         
-        
+        #save_data()
         
         
         # Set up plot
@@ -1309,7 +1312,7 @@ def main():
     """  
     # Define values
     default_kwargs = {
-        "Conversion Cost (€)" : 8000,
+        "Conversion Cost (€)" : 0,
         "Fountain Cost (€)" : 700,
         "Pump Cost (€/W)" : 1, # €/W Estimated! Needs verifying
         "Number of Generations": 100,
