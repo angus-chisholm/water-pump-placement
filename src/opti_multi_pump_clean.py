@@ -18,6 +18,9 @@ import fluids
 import tkinter as tk
 from tkinter import messagebox
 import traceback
+from datetime import datetime
+import os
+import pickle
 
 
 ## Define functions
@@ -300,6 +303,7 @@ class TopologyPositionProblem(ElementwiseProblem):
         self.water_tower_height = kwargs.get("water_tower_height")
         self.pipe_costs = kwargs.get("pipe_costs")
         self.pump_cost_per_watt = kwargs.get("pump_cost_per_watt")
+        self.fountains_retrofitted = kwargs.get("fountains_retrofitted")
         
         
         self.fixed_heights = self.fixed_heights + self.water_tower_height
@@ -343,7 +347,7 @@ class TopologyPositionProblem(ElementwiseProblem):
         n = self.n_new_nodes
         parents = X[:n].astype(int)
         coords = X[n:3*n].reshape(n,2)
-        converted_fixed_pumps = np.zeros(m)
+        converted_fixed_pumps = 0
         pipe_data = []   # Each graph for each solution
         self.fixed_costs = np.array([0 for _ in self.fixed_nodes]+[self.cost_fountain for _ in range(self.n_new_nodes)])
 
@@ -361,6 +365,12 @@ class TopologyPositionProblem(ElementwiseProblem):
                 parent = self.fixed_nodes[p]
                 parent_coord = self.fixed_coords[p]
                 self.fixed_costs[p] = self.cost_conversion
+                converted_fixed_pumps += 1
+                if converted_fixed_pumps > self.fountains_retrofitted:
+                    out["F"] = [1e6, 1e6]  # large penalty
+                    return
+                else:
+                    pass
             else:
                 parent = f"N{p - len(self.fixed_nodes)}"
                 parent_coord = coords[p - len(self.fixed_nodes)]
@@ -649,11 +659,10 @@ def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
     return res, pipe_data_results
 
 class InteractiveParetoPlot:
-    def __init__(self, concatenated_result_vals, all_positions, all_result_vals, all_indices, 
+    def __init__(self, all_positions, all_result_vals, all_indices, 
                  households, pos_pumps, grid_x, grid_y, grid_z, initial_impact, pipe_data,impactfn,
                  max_nb_fountains, all_X=None):
         # Store data
-        self.concatenated_result_vals = concatenated_result_vals
         self.all_positions = all_positions
         self.all_result_vals = all_result_vals
         self.all_indices = all_indices
@@ -1174,8 +1183,87 @@ class InteractiveParetoPlot:
 
 entry_widgets = {}
 
-def save_output():
+def save_output(all_positions, all_result_vals, all_indices, all_X, max_nb_fountains, pipe_data, initial_impact):
+    # x format:
+    #     [parent_0, parent_1, ..., parent_{n-1}, x_0, y_0, ..., x_{n-1}, y_{n-1}]
+    # all positions is [[[x_0,y_0,...],[for each solution of n=1],...],[for each solution of n=max_nb_fountains etc]]
     
+    # Create output folder if it doesn't exist
+    output_dir = 'src/Output'
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create a timestamp once for all files
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Create Excel writer object
+    excel_filename = f'{output_dir}/{timestamp}_data_output.xlsx'
+    pkl_filename = f'{output_dir}/{timestamp}_pipe_data_output.pkl'
+    
+    with pd.ExcelWriter(excel_filename, engine='openpyxl') as writer:
+        sheet_name = f'data_summary'
+        df_summary = pd.DataFrame({'initial_impact': [initial_impact]})
+        df_summary.to_excel(writer, sheet_name=sheet_name, index=False)
+        for i in range(max_nb_fountains):
+            n_fountains = i + 1
+            positions = all_positions[i]
+            result_vals = all_result_vals[i]
+            indices = all_indices[i]
+            Xs = all_X[i]
+            pipe_data_config = pipe_data[i]
+            
+            # Build header
+            header = []
+            # Parent indices
+            header.extend([f'Fountain_{j+1}_Parent_index' for j in range(n_fountains)])
+            # Longitudes and Latitudes
+            header.extend([f'Fountain_{j+1}_{coord}' for j in range(n_fountains) for coord in ['Lon', 'Lat']])
+            # Impact and Cost
+            header.extend(['Impact', 'Cost (€)'])
+            
+            # Build data rows
+            data_rows = []
+            for k in range(len(Xs)):
+                row = []
+                # Parent indices for this solution
+                for j in range(n_fountains):
+                    row.append(Xs[k][j])
+                # Longitudes and Latitudes for this solution
+                for j in range(n_fountains):
+                    row.append(Xs[k][n_fountains + 2*j])      # Lon
+                    row.append(Xs[k][n_fountains + 2*j + 1])  # Lat
+                # Impact and Cost
+                row.extend([result_vals[k][0], result_vals[k][1]])
+                data_rows.append(row)
+            
+            # Create DataFrame and write to Excel
+            df = pd.DataFrame(data_rows, columns=header)
+            sheet_name = f'{n_fountains}_fountains'
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+    with open(pkl_filename, 'wb') as pkl_file:
+        pickle.dump(pipe_data_config, pkl_file)
+    return
+
+def setup_data(file_path):
+    # Import data and define arrays (may need to rewrite read function depending on input)
+    data,households,pumps,open_wells = read_data_gogma(file_path)
+    pos_households = households[['Lon','Lat']].to_numpy() 
+    nb_capita = households['Nb capita'].to_numpy()
+    pos_pumps = pumps[['Lon','Lat']].to_numpy()
+    bounds = np.array([
+        [data['Lon'].min(), data['Lat'].min()],  # Min bounds
+        [data['Lon'].max(), data['Lat'].max()],  # Max bounds
+    ])
+    
+    # Create gridpoints for relief plot
+    grid_x, grid_y = np.mgrid[data['Lon'].min():data['Lon'].max():200j, 
+                            data['Lat'].min():data['Lat'].max():200j]
+    grid_z = griddata((data['Lon'], data['Lat']), data['Altitude'], (grid_x, grid_y), method='cubic')
+    
+    # Create interpolator for altitude
+    get_alt = build_altitude_interpolator(data)
+    
+    return households, pumps, pos_households, nb_capita, pos_pumps, bounds, grid_x, grid_y, grid_z, get_alt
 
 def run_optimisation_and_plot():
     
@@ -1198,32 +1286,15 @@ def run_optimisation_and_plot():
                 0.063: 2.90+labour_and_fixed_pipe,
                 0.09: 5.59+labour_and_fixed_pipe,
             },
-            "water_tower_height" : 4,
+            "water_tower_height" : float(entry_widgets["Water Tower Height (m)"].get()),
+            "fountains_retrofitted" : float(entry_widgets["Fountains Retrofitted"].get()),
         }
         impactfn = impact_dict[entry_widgets["Impact Function"].get()]
-        max_nb_fountains = int(entry_widgets["Maximum Number of Fountains"].get())
+        max_nb_fountains = int(entry_widgets["Maximum Number of New Fountains"].get())
     
         # Setup data
         
-        # Import data and define arrays (may need to rewrite read function depending on input)
-        data_file = r'src\data\DO_NOT_DISTRIBUTE_DATA_GOGMA.xlsx'
-        data,households,pumps,open_wells = read_data_gogma(data_file)
-        pos_households = households[['Lon','Lat']].to_numpy() 
-        nb_capita = households['Nb capita'].to_numpy()
-        pos_pumps = pumps[['Lon','Lat']].to_numpy()
-        bounds = np.array([
-            [data['Lon'].min(), data['Lat'].min()],  # Min bounds
-            [data['Lon'].max(), data['Lat'].max()],  # Max bounds
-        ])
-        
-        # Create gridpoints for relief plot
-        grid_x, grid_y = np.mgrid[data['Lon'].min():data['Lon'].max():200j, 
-                                data['Lat'].min():data['Lat'].max():200j]
-        grid_z = griddata((data['Lon'], data['Lat']), data['Altitude'], (grid_x, grid_y), method='cubic')
-        
-        # Create interpolator for altitude
-        get_alt = build_altitude_interpolator(data)
-        
+        households, pumps, pos_households, nb_capita, pos_pumps, bounds, grid_x, grid_y, grid_z, get_alt = setup_data(r'src\data\DO_NOT_DISTRIBUTE_DATA_GOGMA.xlsx')
         
         # Run optimiser
         all_result_vals = []
@@ -1242,16 +1313,17 @@ def run_optimisation_and_plot():
             all_X.append(res.X)
             pipe_data.append(res_pipe_data)
             
-        concatenated_result_vals = np.concatenate(all_result_vals)
+        initial_impact = impactfn(pos_pumps, pos_households, nb_capita)
+            
         
-        #save_data()
+        save_output(all_positions, all_result_vals, all_indices,all_X, max_nb_fountains, pipe_data, initial_impact)
         
         
         # Set up plot
         interactive_plot = InteractiveParetoPlot(
-            concatenated_result_vals, all_positions, all_result_vals, all_indices,
+            all_positions, all_result_vals, all_indices,
             households, pos_pumps, grid_x, grid_y, grid_z, 
-            impactfn(pos_pumps, pos_households, nb_capita),
+            initial_impact,
             pipe_data, impactfn, max_nb_fountains, all_X
         )
 
@@ -1316,8 +1388,9 @@ def main():
         "Fountain Cost (€)" : 700,
         "Pump Cost (€/W)" : 1, # €/W Estimated! Needs verifying
         "Number of Generations": 100,
-        "Maximum Number of Fountains": 3,
+        "Maximum Number of New Fountains": 3,
         "Water Tower Height (m)" : 4,
+        "Fountains Retrofitted": 1,
     }
     root,main_frame = create_gui()
     row_num=0 
