@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import geopy.distance as geo
+from geopy.distance import great_circle, lonlat
 import pandas as pd
 from scipy.interpolate import griddata, RBFInterpolator
 from pymoo.core.variable import Real, Integer, Binary
@@ -91,7 +92,7 @@ def pump_distance(
     for index,pos_household in enumerate(household_positions):
         dist = np.zeros(len(pump_positions_copy))
         for i,pump_pos in enumerate(pump_positions_copy):
-            dist[i] = geo.great_circle(pump_pos, pos_household).meters
+            dist[i] = great_circle(lonlat(*pump_pos), lonlat(*pos_household)).meters
         min_pump_distance[index] = np.min(dist)
         min_pump_distance_index[index] = int(np.argmin(dist))
     
@@ -256,18 +257,7 @@ class consumption_generator():
         self.household_positions = household_positions
         self.pump_coords = np.array(list(nx.get_node_attributes(self.graph, 'coords').values()))
         self.min_indices = pump_distance(self.pump_coords, household_positions)[1]
-        self.df_on_times = self.generate_pump_on_times()
-        
-        # # Put on times into graph attributes
-        # for pump_key in self.node_dict.keys():
-        #     pump_index = self.node_dict[pump_key]
-        #     try:
-        #         on_times = self.df_on_times[f'pump_{pump_index}'].to_dict()
-        #     except KeyError:
-        #         on_times = {}
-        #     nx.set_node_attributes(self.graph, {pump_key: on_times}, 'on_times')
-            
-        # self.analyze_all_pipe_loading()
+        self.generate_pump_on_times()
         
 
     def get_consumption(self):
@@ -282,6 +272,10 @@ class consumption_generator():
             if pump_key not in consumption_dict:
                 consumption_dict[pump_key] = 0
             consumption_dict[pump_key] += self.nb_capita[i]*10 # 10 L per capita per day
+            
+        for node in self.graph.nodes():
+            if node not in consumption_dict:
+                consumption_dict[node] = 0
             
         return consumption_dict
 
@@ -482,7 +476,7 @@ class TopologyPositionProblem(ElementwiseProblem):
             self.head[i] = 0 # Assume fixed pumps have 0 head initially
         
         
-        self.pipe_data_storage = []  # List-based storage to avoid floating-point key issues
+        self.pipe_data_storage = {}  # Dict storage: key = tuple of X, value = graph
         self.chaining_penalty = {}
         
         
@@ -546,7 +540,7 @@ class TopologyPositionProblem(ElementwiseProblem):
                 parent_coord = coords[p - len(self.fixed_nodes)]
             
             coord_new_node = coords[i]
-            length = geo.great_circle(parent_coord, coord_new_node).meters
+            length = great_circle(lonlat(*parent_coord), lonlat(*coord_new_node)).meters
             G.add_edge(parent, child, weight=length)
 
                 
@@ -595,13 +589,13 @@ class TopologyPositionProblem(ElementwiseProblem):
         
         f1 = float(f1)
         f2 = float(f2)
+        # print(X)
+        # print(updated_graph.nodes['N0'])
         
                 
-        # Store graph in list (avoids floating-point tuple key issues)
-        self.pipe_data_storage.append(updated_graph)
-        
-        
-
+        # Store graph in dictionary, keyed by solution X
+        solution_key = tuple(X.flatten())
+        self.pipe_data_storage[solution_key] = nx.freeze(updated_graph.copy())
         
         out["F"] = [f1, f2]
 
@@ -846,11 +840,15 @@ def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
                 ('n_gen', kwargs["simulation_generations"]),
                 seed=4,
                 verbose=True,
-                callback=keep_only_nds_pipe_data)
+    )
     
-    # Retrieve pipe data from storage (only contains last generation due to callback)
-    pipe_data_results = problem.pipe_data_storage
-
+    # Retrieve pipe data ONLY for the final Pareto front solutions
+    pipe_data_results = {}
+    for X_solution in res.X:
+        solution_key = tuple(X_solution.flatten())
+        if solution_key in problem.pipe_data_storage:
+            pipe_data_results[solution_key] = problem.pipe_data_storage[solution_key]
+    
     return res, pipe_data_results
 
 class InteractiveParetoPlot:
@@ -1102,28 +1100,24 @@ class InteractiveParetoPlot:
     def get_pipe_data_text(self, config_idx, solution_in_config, solution_X=None):
         """Get formatted pipe data text for display"""
         try:
-            # Access pipe_data by list index (avoids floating-point tuple key mismatches)
+            # Access pipe_data by X key (solution_X required for dict-based storage)
             if config_idx < len(self.pipe_data):
                 config_data = self.pipe_data[config_idx]
                 
-                # If it's a list, use solution_in_config as index
-                if isinstance(config_data, list):
-                    if solution_in_config < len(config_data):
-                        return config_data[solution_in_config]
-                # If it's a dict (legacy), try tuple key lookup
-                elif isinstance(config_data, dict):
+                # Dict-based storage: use X as key
+                if isinstance(config_data, dict):
                     if solution_X is not None:
                         solution_key = tuple(solution_X.flatten())
                         if solution_key in config_data:
                             return config_data[solution_key]
-                    # Fallback: try index-based access on dict values
-                    try:
-                        return list(config_data.values())[solution_in_config]
-                    except IndexError:
-                        pass
+                # Legacy list-based storage
+                elif isinstance(config_data, list):
+                    if solution_in_config < len(config_data):
+                        return config_data[solution_in_config]
             
             return "No data available"
-        except (IndexError, KeyError, TypeError):
+        except (IndexError, KeyError, TypeError) as e:
+            print(f"Error retrieving pipe data: {e}")
             return "No data available"
     
     def highlight_solution(self, solution_idx):
@@ -1204,6 +1198,7 @@ class InteractiveParetoPlot:
                         parent = list(data_graph.predecessors(node))[0]
                         edge_data = data_graph.get_edge_data(parent, node)
                         
+                        
                         lon, lat = node_data['coords']
                         fountain_head = node_data['head']
                         diameter = edge_data['diameter']
@@ -1216,6 +1211,7 @@ class InteractiveParetoPlot:
         
         # Create box properties
         props = dict(boxstyle='round', facecolor='lightblue', alpha=0.8, edgecolor='black')
+        # print(solution_X)
         
         # Add solution info to the text
         k = self.n_tested[config_idx]
@@ -1430,11 +1426,14 @@ def save_output(all_positions, all_result_vals, all_indices, all_X, max_nb_fount
                 row = []
                 # Parent indices for this solution
                 for j in range(n_fountains):
-                    row.append(Xs[k][j])
+                    row.append(indices[k,j])
+                    # row.append(Xs[k][j])
                 # Longitudes and Latitudes for this solution
                 for j in range(n_fountains):
-                    row.append(Xs[k][n_fountains + 2*j])      # Lon
-                    row.append(Xs[k][n_fountains + 2*j + 1])  # Lat
+                    row.append(positions[k,2*j])
+                    row.append(positions[k,2*j+1])
+                    # row.append(Xs[k][n_fountains + 2*j])      # Lon
+                    # row.append(Xs[k][n_fountains + 2*j + 1])  # Lat
                 # Impact and Cost
                 row.extend([result_vals[k][0], result_vals[k][1]])
                 data_rows.append(row)
@@ -1513,9 +1512,11 @@ def run_optimisation_and_plot():
                                             **gui_kwargs)
             all_result_vals.append(res.F)
             all_indices.append(res.X[:,:i])
-            all_positions.append(res.X[:,i:3*i])
+            all_positions.append(res.X[:,i:i+2*i])
             all_X.append(res.X)
             pipe_data.append(res_pipe_data)
+            # print(res.X[0])
+            # print(res_pipe_data[tuple(res.X[0].flatten())].nodes['N0'])
             
         initial_impact = impactfn(pos_pumps, pos_households, nb_capita)
             
