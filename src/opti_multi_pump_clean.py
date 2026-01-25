@@ -21,6 +21,7 @@ import traceback
 from datetime import datetime
 import os
 import pickle
+import math
 
 
 ## Define functions
@@ -85,28 +86,19 @@ def pump_distance(
         
     # Create arrays to assign values to
     min_pump_distance = np.zeros(len(household_positions))
-    min_pump_distance_index = np.zeros(len(household_positions))
+    min_pump_distance_index = np.zeros(len(household_positions), dtype=np.int8)
     
     for index,pos_household in enumerate(household_positions):
         dist = np.zeros(len(pump_positions_copy))
         for i,pump_pos in enumerate(pump_positions_copy):
             dist[i] = geo.great_circle(pump_pos, pos_household).meters
         min_pump_distance[index] = np.min(dist)
-        min_pump_distance_index[index] = np.argmin(dist)
+        min_pump_distance_index[index] = int(np.argmin(dist))
     
     return min_pump_distance, min_pump_distance_index
-def get_consumption(min_indices, household_consumption):
-    ### This is a DAILY value, and so if we want to calculate more realistic pressure losses/pump requirements, need to have a peak value i.e. daily-->peak Q function (graph of daily usage etc)
-    """
-    Takes indices of the closest pump from households as well as per household consumption
-    Returns consumption at each pump
-    """
-    
-    consumption_pump = np.zeros(len(household_consumption))
-    for i,pump in min_indices:
-        consumption_pump[pump] += household_consumption[i]
-    
-    return consumption_pump
+
+
+
 def read_data_gogma(file_path):
     data_households, data_sources = pd.read_excel(
         file_path,
@@ -254,6 +246,184 @@ impact_dict = {
     "Within 30 mins": impact2,
 }
 
+class consumption_generator():
+    def __init__(self, profile_file, nb_capita, G, household_positions):
+        self.usage_profile = pd.read_excel(profile_file,index_col="Heure")
+        self.nb_capita = nb_capita
+        self.graph = G
+        self.graph_nodes = list(self.graph)
+        self.node_dict = {self.graph_nodes[i]:i for i in range(len(self.graph_nodes))}
+        self.household_positions = household_positions
+        self.pump_coords = np.array(list(nx.get_node_attributes(self.graph, 'coords').values()))
+        self.min_indices = pump_distance(self.pump_coords, household_positions)[1]
+        self.df_on_times = self.generate_pump_on_times()
+        
+        # # Put on times into graph attributes
+        # for pump_key in self.node_dict.keys():
+        #     pump_index = self.node_dict[pump_key]
+        #     try:
+        #         on_times = self.df_on_times[f'pump_{pump_index}'].to_dict()
+        #     except KeyError:
+        #         on_times = {}
+        #     nx.set_node_attributes(self.graph, {pump_key: on_times}, 'on_times')
+            
+        # self.analyze_all_pipe_loading()
+        
+
+    def get_consumption(self):
+        # Calculate daily consumption
+        """
+        Takes indices of the closest pump from households as well as per household consumption
+        Returns dict: {pump_index: total_consumption}
+        """
+        consumption_dict = {}
+        for i, pump in enumerate(self.min_indices):
+            pump_key = self.graph_nodes[pump]
+            if pump_key not in consumption_dict:
+                consumption_dict[pump_key] = 0
+            consumption_dict[pump_key] += self.nb_capita[i]*10 # 10 L per capita per day
+            
+        return consumption_dict
+
+    def generate_value_gaussian(self, mean, std_dev, rng):
+        return rng.normal(loc=mean, scale=std_dev)
+    
+    def generate_pump_on_times(self):
+        # Generate pump on-times with proper handling of remainders and no overlap into next hour
+        pump_on_times = {}
+
+        consumption_dict = self.get_consumption()
+        means = self.usage_profile["moyenne"].to_numpy()
+        std_devs = self.usage_profile["std_dev"].to_numpy()
+        for i, k in enumerate(consumption_dict.keys()):
+            rng = np.random.default_rng(i)
+            
+            # Generate consumption distribution
+            dist = np.array([self.generate_value_gaussian(m, s, rng) for m, s in zip(means, std_devs)]).clip(min=0)
+            dist = dist / dist.sum()
+            
+            # Calculate consumption and flowing times
+            consumption = dist * consumption_dict[k]
+            flowing_times = consumption / (0.3 * 60)  # minutes
+            
+            # For each hour, generate intervals with durations and random start times
+            on_times_dict = {}
+            for hour_idx, flowing_time in enumerate(flowing_times):
+                remaining_time = flowing_time
+                while remaining_time > 0.01:  # Small threshold for floating point
+                    # Interval is either 2 minutes or whatever is left
+                    interval_duration = min(2, remaining_time)
+                    remaining_time -= interval_duration
+                    
+                    # Generate random start time that doesn't overlap into next hour
+                    # Max start (in seconds) = 60 mins - interval_duration
+                    max_start_seconds = (60 - interval_duration) * 60
+                    if max_start_seconds > 0:
+                        start_second = math.floor(rng.uniform(0, max_start_seconds))
+                        interval_duration_sec = math.floor(interval_duration * 60)  # Convert to seconds
+                        on_times_dict[hour_idx] = on_times_dict.get(hour_idx, []) + [(start_second, interval_duration_sec)]
+            
+            pump_on_times[k] = on_times_dict
+
+        # Convert to DataFrame with hours as index and pump columns
+        data = {f'pump_{k}': {h: pump_on_times[k].get(h,) for h in range(24)} 
+                for k in pump_on_times.keys()}
+        
+        self.df_on_times = pd.DataFrame(data)
+        
+        # Put on times into graph attributes
+        for pump_key, sched in pump_on_times.items():
+            try:
+                on_times = sched
+            except KeyError:
+                on_times = {}
+            nx.set_node_attributes(self.graph, {pump_key: on_times}, 'on_times')
+        
+        return
+    
+    def calculate_flow_multiplier(self, intervals):
+        """
+        Input: List of (start, end) tuples.
+        Output: List of (start, end, count) showing flow depth.
+        """
+        events = []
+        for start, end in intervals:
+            events.append((start, 1))  # Flow starts (+1)
+            events.append((end, -1))   # Flow ends (-1)
+
+        # Sort by time. If times are equal, process start (+1) before end (-1)
+        events.sort()
+
+        processed_profile = []
+        current_depth = 0
+        prev_time = events[0][0]
+
+        for time, change in events:
+            if time > prev_time:
+                # Record the interval we just finished traversing
+                if current_depth > 0:
+                    processed_profile.append({
+                        'start': prev_time,
+                        'end': time,
+                        'flow_multiplier': current_depth 
+                    })
+            
+            current_depth += change
+            prev_time = time
+            
+        return processed_profile
+
+
+    def assign_flow_to_edges(self):
+        
+        # 1. Initialize a temporary list on every edge to hold raw time data
+        for u, v in self.graph.edges():
+            self.graph[u][v]['raw_intervals'] = []
+
+        # 2. Iterate through every node to find demand
+        for node in self.graph.nodes():
+            node_data = self.graph.nodes[node]
+            
+            # print(node_data['on_times'] if 'on_times' in node_data else f"No on_times for node {node}...")
+            if 'on_times' in node_data and node_data['on_times']:
+                my_intervals = []
+                
+                # Iterate through the Hours (keys) and Times (values)
+                for hour_key, time_list in node_data['on_times'].items():
+                    for (start_sec, duration) in time_list:
+                        
+                        # CONVERSION: Turn relative hour times into absolute seconds of the day
+                        # Formula: (Hour * 3600) + Seconds
+                        absolute_start = (hour_key * 3600) + start_sec
+                        absolute_end = absolute_start + duration
+                        
+                        my_intervals.append((absolute_start, absolute_end))
+                
+                # 3. Find the upstream edges for this specific node
+                ancestors = nx.ancestors(self.graph, node) | {node}
+                path_edges = self.graph.subgraph(ancestors).edges()
+                
+                # 4. Add this node's intervals to ALL those upstream edges
+                for u, v in path_edges:
+                    self.graph[u][v]['raw_intervals'].extend(my_intervals)
+                    
+        # 5. Final Pass: Calculate the overlaps for each edge
+        for u, v in self.graph.edges():
+            raw = self.graph[u][v].pop('raw_intervals') # Remove raw data to save memory
+            if raw:
+                # Run the helper function to get the "2x", "3x" markers
+                self.graph[u][v]['flow_schedule'] = self.calculate_flow_multiplier(raw)
+            else:
+                self.graph[u][v]['flow_schedule'] = []
+            
+        return
+    
+    def assign_consumption_to_graph(self):
+        self.generate_pump_on_times()
+        self.assign_flow_to_edges()
+        return self.graph
+
+
 # Optimisation functions
 class TopologyPositionProblem(ElementwiseProblem):
     def __init__(self, fixed_nodes, fixed_coords, fixed_heights,
@@ -312,7 +482,7 @@ class TopologyPositionProblem(ElementwiseProblem):
             self.head[i] = 0 # Assume fixed pumps have 0 head initially
         
         
-        self.pipe_data_storage = {}
+        self.pipe_data_storage = []  # List-based storage to avoid floating-point key issues
         self.chaining_penalty = {}
         
         
@@ -407,6 +577,14 @@ class TopologyPositionProblem(ElementwiseProblem):
         # Compute weighted sum of distances to points in pos_households with all nodes
         f1 = self.impact_fn(self.fixed_coords,self.house_coords,self.house_weights,coords)  # Negative impact calculation with new x location
 
+
+        cons_gen = consumption_generator(
+            profile_file=r'src\data\usage_profile.xlsx',
+            nb_capita=self.house_weights,
+            G=G,
+            household_positions=self.house_coords)
+        
+        G = cons_gen.assign_consumption_to_graph()
         
         # Compute cost f2
         f2 = 0
@@ -419,9 +597,8 @@ class TopologyPositionProblem(ElementwiseProblem):
         f2 = float(f2)
         
                 
-        # Create a hashable key from the solution
-        solution_key = tuple(X.flatten())
-        self.pipe_data_storage[solution_key] = updated_graph
+        # Store graph in list (avoids floating-point tuple key issues)
+        self.pipe_data_storage.append(updated_graph)
         
         
 
@@ -639,6 +816,23 @@ def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
     )
     xl, xu, var_items = attach_numeric_bounds(problem)
     
+    # Callback to keep only pipe_data for non-dominated solutions (NDS)
+    def keep_only_nds_pipe_data(algorithm):
+        if algorithm.opt is not None and len(algorithm.opt) > 0 and len(problem.pipe_data_storage) > 0:
+            # Get indices of non-dominated solutions from the full population
+            nds_indices = set()
+            for solution in algorithm.opt:
+                # Find this solution in the population using closest match
+                for i, pop_solution in enumerate(algorithm.pop):
+                    if np.allclose(solution.X, pop_solution.X):
+                        nds_indices.add(i)
+                        break
+            
+            # Filter pipe_data_storage list to only keep NDS solutions
+            filtered_storage = [problem.pipe_data_storage[i] for i in sorted(nds_indices) 
+                              if i < len(problem.pipe_data_storage)]
+            problem.pipe_data_storage = filtered_storage
+    
     algorithm = NSGA2(
         pop_size=50,
         sampling=MixedSampler(),
@@ -651,9 +845,10 @@ def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
                 algorithm,
                 ('n_gen', kwargs["simulation_generations"]),
                 seed=4,
-                verbose=True)
+                verbose=True,
+                callback=keep_only_nds_pipe_data)
     
-    # Retrieve pipe data from storage
+    # Retrieve pipe data from storage (only contains last generation due to callback)
     pipe_data_results = problem.pipe_data_storage
 
     return res, pipe_data_results
@@ -907,17 +1102,27 @@ class InteractiveParetoPlot:
     def get_pipe_data_text(self, config_idx, solution_in_config, solution_X=None):
         """Get formatted pipe data text for display"""
         try:
-            # Access the pipe data using id(solution_X) if available
-            if solution_X is not None:
-                solution_key = tuple(solution_X.flatten())
-
-                if solution_key in self.pipe_data[config_idx]:
-                    data = self.pipe_data[config_idx][solution_key]
-                    return data
-            # Fallback to index-based access
-            data = self.pipe_data[config_idx][solution_in_config]
-            return data
+            # Access pipe_data by list index (avoids floating-point tuple key mismatches)
+            if config_idx < len(self.pipe_data):
+                config_data = self.pipe_data[config_idx]
+                
+                # If it's a list, use solution_in_config as index
+                if isinstance(config_data, list):
+                    if solution_in_config < len(config_data):
+                        return config_data[solution_in_config]
+                # If it's a dict (legacy), try tuple key lookup
+                elif isinstance(config_data, dict):
+                    if solution_X is not None:
+                        solution_key = tuple(solution_X.flatten())
+                        if solution_key in config_data:
+                            return config_data[solution_key]
+                    # Fallback: try index-based access on dict values
+                    try:
+                        return list(config_data.values())[solution_in_config]
+                    except IndexError:
+                        pass
             
+            return "No data available"
         except (IndexError, KeyError, TypeError):
             return "No data available"
     
@@ -1209,7 +1414,6 @@ def save_output(all_positions, all_result_vals, all_indices, all_X, max_nb_fount
             result_vals = all_result_vals[i]
             indices = all_indices[i]
             Xs = all_X[i]
-            pipe_data_config = pipe_data[i]
             
             # Build header
             header = []
@@ -1241,7 +1445,7 @@ def save_output(all_positions, all_result_vals, all_indices, all_X, max_nb_fount
             df.to_excel(writer, sheet_name=sheet_name, index=False)
             
     with open(pkl_filename, 'wb') as pkl_file:
-        pickle.dump(pipe_data_config, pkl_file)
+        pickle.dump(pipe_data, pkl_file)
     return
 
 def setup_data(file_path):
@@ -1294,7 +1498,7 @@ def run_optimisation_and_plot():
     
         # Setup data
         
-        households, pumps, pos_households, nb_capita, pos_pumps, bounds, grid_x, grid_y, grid_z, get_alt = setup_data(r'src\data\DO_NOT_DISTRIBUTE_DATA_GOGMA.xlsx')
+        households, pumps, pos_households, nb_capita, pos_pumps, bounds, grid_x, grid_y, grid_z, get_alt = setup_data(r'..\DO_NOT_DISTRIBUTE\DO_NOT_DISTRIBUTE_DATA_GOGMA.xlsx')
         
         # Run optimiser
         all_result_vals = []
@@ -1387,8 +1591,8 @@ def main():
         "Conversion Cost (€)" : 0,
         "Fountain Cost (€)" : 700,
         "Pump Cost (€/W)" : 1, # €/W Estimated! Needs verifying
-        "Number of Generations": 100,
-        "Maximum Number of New Fountains": 3,
+        "Number of Generations": 5,
+        "Maximum Number of New Fountains": 2,
         "Water Tower Height (m)" : 4,
         "Fountains Retrofitted": 1,
     }
