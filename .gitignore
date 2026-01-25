@@ -5,3 +5,6 @@ src/data/*
 # Ignore contents of Output, but keep the folder via .gitkeep
 src/Output/*
 !src/Output/.gitkeep
+
+# Ignore Old-files
+src/Old-files/*
