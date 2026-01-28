@@ -220,6 +220,11 @@ impact_dict = {
     "Within 30 mins": impact2,
 }
 
+pumping_dict = {
+    "Electric": "Electric",
+    "Diesel": "Diesel",
+}
+
 class consumption_generator():
     def __init__(self, profile_file, nb_capita, G, household_positions):
         self.usage_profile = pd.read_excel(profile_file,index_col="Heure")
@@ -1495,7 +1500,7 @@ def run_optimisation_and_plot():
             },
             "water_tower_height" : float(entry_widgets["Water Tower Height (m)"].get()),
             "fountains_retrofitted" : float(entry_widgets["Fountains Retrofitted"].get()),
-            "Pumping method": entry_widgets["Pumping method"].get()
+            "Pumping method": impact_dict[entry_widgets["Pumping Method"].get()]
         }
         impactfn = impact_dict[entry_widgets["Impact Function"].get()]
         max_nb_fountains = int(entry_widgets["Maximum Number of New Fountains"].get())
@@ -1604,28 +1609,37 @@ def main():
     }
     root,main_frame = create_gui()
     row_num=0 
-    for k,v in default_kwargs.items():
-        create_parameter_entry(main_frame, k, v,row_num,entry_widgets)
-        row_num+=1
+    # entry_widgets = {}
+    # row_num = 0 
+    
+    # 1. Generate numerical entries from kwargs
+    for k, v in default_kwargs.items():
+        create_parameter_entry(main_frame, k, v, row_num, entry_widgets)
+        row_num += 1
+
+    # 2. Add 'Impact Function' Dropdown
     entry_widgets['Impact Function'] = tk.StringVar(root)
     entry_widgets['Impact Function'].set(list(impact_dict.keys())[0])
     tk.Label(main_frame, text='Impact Function').grid(row=row_num, column=0, sticky="w")
-    dropdown = tk.OptionMenu(main_frame, entry_widgets['Impact Function'], *list(impact_dict.keys()))
-    dropdown.grid(row=row_num, column=1)
-    entry_widgets['Pumping method'] = tk.StringVar(root)
-    entry_widgets['Pumping method'].set(list(impact_dict.keys())[0])
-    tk.Label(main_frame, text='Pumping method').grid(row=row_num, column=0, sticky="w")
-    dropdown = tk.OptionMenu(main_frame, entry_widgets['Pumping method'], *list(impact_dict.keys()))
-    dropdown.grid(row=row_num, column=1)
+    dropdown_impact = tk.OptionMenu(main_frame, entry_widgets['Impact Function'], *list(impact_dict.keys()))
+    dropdown_impact.grid(row=row_num, column=1)
+    row_num += 1 # Increment to the next row!
 
-        
-        
-    # Run button
+    # 3. Add 'Pumping Method' Dropdown (Using your new dictionary)
+    entry_widgets['Pumping Method'] = tk.StringVar(root)
+    entry_widgets['Pumping Method'].set(list(pumping_dict.keys())[0])
+    tk.Label(main_frame, text='Pumping Method').grid(row=row_num, column=0, sticky="w")
+    dropdown_pump = tk.OptionMenu(main_frame, entry_widgets['Pumping Method'], *list(pumping_dict.keys()))
+    dropdown_pump.grid(row=row_num, column=1)
+    row_num += 1
+
+    # 4. Run button (placed at the bottom)
     run_button = tk.Button(main_frame, text="Run Optimisation", command=run_optimisation_and_plot)
-    run_button.grid(row=row_num+1, columnspan=2, pady=10)
+    run_button.grid(row=row_num, columnspan=2, pady=10)
     
     root.mainloop()
-    
+
+
 # Run code
 if __name__ == "__main__":
     main()
