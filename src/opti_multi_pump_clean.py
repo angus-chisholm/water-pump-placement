@@ -271,9 +271,9 @@ class consumption_generator():
             rng = np.random.default_rng(i)
             
             # Generate consumption distribution
-            dist = np.array([self.generate_value_gaussian(m, s, rng) for m, s in zip(means, std_devs)]).clip(min=0)
+            dist = np.array([self.generate_value_gaussian(m, s, rng) for m, s in zip(means, std_devs) if s != 0])#.clip(min=0)
             dist = dist / dist.sum()
-            
+
             # Calculate consumption and flowing times
             consumption = dist * consumption_dict[k]
             flowing_times = consumption / (0.3 * 60)  # minutes
@@ -288,7 +288,7 @@ class consumption_generator():
                     remaining_time -= interval_duration
                     
                     # Generate random start time that doesn't overlap into next hour
-                    # Max start (in seconds) = 60 mins - interval_duration
+                    # Max start (in seconds) = 60 mins - interval_durationc
                     max_start_seconds = (60 - interval_duration) * 60
                     if max_start_seconds > 0:
                         start_second = math.floor(rng.uniform(0, max_start_seconds))
@@ -446,6 +446,7 @@ class TopologyPositionProblem(ElementwiseProblem):
         self.pipe_costs = kwargs.get("pipe_costs")
         self.pump_cost_per_watt = kwargs.get("pump_cost_per_watt")
         self.fountains_retrofitted = kwargs.get("fountains_retrofitted")
+        self.pumping_method = kwargs.get("pumping_method")
         
         
         self.fixed_heights = self.fixed_heights + self.water_tower_height
@@ -479,6 +480,10 @@ class TopologyPositionProblem(ElementwiseProblem):
                 G.add_edges_from([(parent,child,{"diameter":diameter_pipe,
                                                     "pump_power":pump_power,"pump_head":pump_head,"pipe_cost":min_pipe_cost})])
         return G
+    
+    def calculate_running_costs(self, G):
+        X = G.edges(data=True)        
+        return
     
     def _evaluate(self, X, out, *args, **kwargs):
         """
@@ -551,7 +556,7 @@ class TopologyPositionProblem(ElementwiseProblem):
 
 
         cons_gen = consumption_generator(
-            profile_file=r'src\data\usage_profile.xlsx',
+            profile_file=r'src\data\usage_profile2.xlsx',
             nb_capita=self.house_weights,
             G=G,
             household_positions=self.house_coords)
@@ -561,6 +566,15 @@ class TopologyPositionProblem(ElementwiseProblem):
         # Compute cost f2
         f2 = 0
         updated_graph = self.pipe_and_pump(G)
+        
+        ## Calculate running costs
+        if self.pumping_method == "Electric":
+            # Calculate electric pumping costs
+            pass
+        elif self.pumping_method == "Diesel":
+            # Calculate diesel pumping costs
+            pass
+
         f2 += np.sum(self.fixed_costs)
         f2 += sum(nx.get_edge_attributes(updated_graph,'pipe_cost').values())
         
@@ -1500,7 +1514,7 @@ def run_optimisation_and_plot():
             },
             "water_tower_height" : float(entry_widgets["Water Tower Height (m)"].get()),
             "fountains_retrofitted" : float(entry_widgets["Fountains Retrofitted"].get()),
-            "Pumping method": impact_dict[entry_widgets["Pumping Method"].get()]
+            "Pumping method": pumping_dict[entry_widgets["Pumping Method"].get()]
         }
         impactfn = impact_dict[entry_widgets["Impact Function"].get()]
         max_nb_fountains = int(entry_widgets["Maximum Number of New Fountains"].get())
