@@ -191,34 +191,7 @@ def pipe_calcs(alt1, alt2, length_pipe, flow_rate, pipe_costs, pump_cost_per_wat
         min_pipe_cost.astype(float)
 
     return min_pipe_cost, diameter_pipe, outlet_head, final_pump_power, final_pump_head
-def get_node_families_dfs_by_level(G):
-    """Get nodes grouped by family and level using DFS from root nodes."""
-    # Find all root nodes
-    root_nodes = [node for node in G.nodes() if G.in_degree(node) == 0]
-    
-    families = []
-    
-    for root in root_nodes:
-        family_dict = {}
-        visited = set()
-        
-        def dfs(node, level):
-            if node not in visited:
-                visited.add(node)
-                # Add node to the level dictionary
-                if level not in family_dict:
-                    family_dict[level] = []
-                family_dict[level].append(node)
-                
-                # Recursively visit successors at the next level
-                for successor in G.successors(node):
-                    dfs(successor, level + 1)
-        
-        dfs(root, 0)
-        if family_dict:
-            families.append(family_dict)
-    
-    return families
+
 
 # Impact functions
 # minimise person-meters
@@ -903,7 +876,7 @@ class InteractiveParetoPlot:
         
         # Store all scatter plots for hover detection
         self.pareto_scatters = []
-        if self.impactfn == impact2:
+        if self.impactfn == "impact2":
             for n, k in enumerate(self.n_tested):
                 scatter = self.ax1.scatter(
                     -1*self.all_result_vals[n][:, 0], 
@@ -954,7 +927,7 @@ class InteractiveParetoPlot:
         pump_idx = 0  # Index to track pumps across all configurations
         
         for n, k in enumerate(self.n_tested):
-            if self.impactfn == impact2:
+            if self.impactfn == "impact2":
                 for i in range(k):
                     pos_pumps_new_plot = self.all_positions[n][:,2*i:2*(i+1)]
                     sc = self.ax2.scatter(
@@ -1050,7 +1023,7 @@ class InteractiveParetoPlot:
         # # Add colorbar
         # if len(self.pump_scatters) > 0:
         #     cbar = self.fig.colorbar(self.pareto_scatters[-1], ax=self.ax2)
-        #     if self.impactfn==impact2:
+        #     if self.impactfn=="impact2":
         #         cbar.set_label('% of people within 30 mins')
         #     else:
         #         cbar.set_label('Impact (thousand person-meters)')
@@ -1108,8 +1081,10 @@ class InteractiveParetoPlot:
                 if isinstance(config_data, dict):
                     if solution_X is not None:
                         solution_key = tuple(solution_X.flatten())
-                        if solution_key in config_data:
-                            return config_data[solution_key]
+                        for key in config_data.keys():
+                            if np.allclose(solution_key, key):
+                                solution_key = key
+                                return config_data[solution_key]
                 # Legacy list-based storage
                 elif isinstance(config_data, list):
                     if solution_in_config < len(config_data):
@@ -1182,12 +1157,41 @@ class InteractiveParetoPlot:
             # Refresh all plots
             self.fig2.canvas.draw_idle()
             self.fig3.canvas.draw_idle()
+            
+    def get_node_families_dfs_by_level(self, G):
+        """Get nodes grouped by family and level using DFS from root nodes."""
+        # Find all root nodes
+        root_nodes = [node for node in G.nodes() if G.in_degree(node) == 0]
+        
+        families = []
+        
+        for root in root_nodes:
+            family_dict = {}
+            visited = set()
+            
+            def dfs(node, level):
+                if node not in visited:
+                    visited.add(node)
+                    # Add node to the level dictionary
+                    if level not in family_dict:
+                        family_dict[level] = []
+                    family_dict[level].append(node)
+                    
+                    # Recursively visit successors at the next level
+                    for successor in G.successors(node):
+                        dfs(successor, level + 1)
+            
+            dfs(root, 0)
+            if family_dict:
+                families.append(family_dict)
+        
+        return families
     
     def show_data_box(self, config_idx, solution_in_config, solution_X=None):
         """Show data box with pipe information"""
         # Get the formatted data text
         data_graph = self.get_pipe_data_text(config_idx, solution_in_config, solution_X)
-        families = get_node_families_dfs_by_level(data_graph)
+        families = self.get_node_families_dfs_by_level(data_graph)
         data_string = ""
         for i, family in enumerate(families):
             for level, nodes in family.items():
@@ -1491,6 +1495,7 @@ def run_optimisation_and_plot():
             },
             "water_tower_height" : float(entry_widgets["Water Tower Height (m)"].get()),
             "fountains_retrofitted" : float(entry_widgets["Fountains Retrofitted"].get()),
+            "Pumping method": entry_widgets["Pumping method"].get()
         }
         impactfn = impact_dict[entry_widgets["Impact Function"].get()]
         max_nb_fountains = int(entry_widgets["Maximum Number of New Fountains"].get())
@@ -1606,6 +1611,11 @@ def main():
     entry_widgets['Impact Function'].set(list(impact_dict.keys())[0])
     tk.Label(main_frame, text='Impact Function').grid(row=row_num, column=0, sticky="w")
     dropdown = tk.OptionMenu(main_frame, entry_widgets['Impact Function'], *list(impact_dict.keys()))
+    dropdown.grid(row=row_num, column=1)
+    entry_widgets['Pumping method'] = tk.StringVar(root)
+    entry_widgets['Pumping method'].set(list(impact_dict.keys())[0])
+    tk.Label(main_frame, text='Pumping method').grid(row=row_num, column=0, sticky="w")
+    dropdown = tk.OptionMenu(main_frame, entry_widgets['Pumping method'], *list(impact_dict.keys()))
     dropdown.grid(row=row_num, column=1)
 
         
