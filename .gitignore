@@ -1,0 +1,10 @@
+# Ignore contents of data, but keep the folder via .gitkeep
+src/data/*
+!src/data/.gitkeep
+
+# Ignore contents of Output, but keep the folder via .gitkeep
+src/Output/*
+!src/Output/.gitkeep
+
+# Ignore Old-files
+src/Old-files/*
