@@ -271,7 +271,7 @@ class consumption_generator():
             rng = np.random.default_rng(i)
             
             # Generate consumption distribution
-            dist = np.array([self.generate_value_gaussian(m, s, rng) for m, s in zip(means, std_devs) if s != 0])#.clip(min=0)
+            dist = np.array([self.generate_value_gaussian(m, s, rng) if s != 0 else 0 for m, s in zip(means, std_devs) ]).clip(min=0)
             dist = dist / dist.sum()
 
             # Calculate consumption and flowing times
@@ -280,20 +280,32 @@ class consumption_generator():
             
             # For each hour, generate intervals with durations and random start times
             on_times_dict = {}
+
             for hour_idx, flowing_time in enumerate(flowing_times):
                 remaining_time = flowing_time
-                while remaining_time > 0.01:  # Small threshold for floating point
-                    # Interval is either 2 minutes or whatever is left
+                on_times_dict[hour_idx] = []
+                while remaining_time > 0.01:
                     interval_duration = min(2, remaining_time)
                     remaining_time -= interval_duration
-                    
-                    # Generate random start time that doesn't overlap into next hour
-                    # Max start (in seconds) = 60 mins - interval_durationc
-                    max_start_seconds = (60 - interval_duration) * 60
-                    if max_start_seconds > 0:
+                    interval_duration_sec = math.floor(interval_duration * 60)
+                    max_start_seconds = 3600 - interval_duration_sec
+
+                    if max_start_seconds <= 0:
+                        break
+                    # Try until we find a non-overlapping slot
+                    for _ in range(100):  # safety cap
                         start_second = math.floor(rng.uniform(0, max_start_seconds))
-                        interval_duration_sec = math.floor(interval_duration * 60)  # Convert to seconds
-                        on_times_dict[hour_idx] = on_times_dict.get(hour_idx, []) + [(start_second, interval_duration_sec)]
+                        end_second = start_second + interval_duration_sec
+                        overlaps = any(
+                            not (end_second <= s or start_second >= s + d)
+                            for s, d in on_times_dict[hour_idx]
+                        )
+                        if not overlaps:
+                            on_times_dict[hour_idx].append((start_second, interval_duration_sec))
+                            break
+                    else:
+                        # Could not place interval without overlap
+                        break
             
             pump_on_times[k] = on_times_dict
 
