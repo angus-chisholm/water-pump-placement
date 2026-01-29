@@ -167,9 +167,13 @@ def pipe_calcs(alt1, alt2, length_pipe, flow_rate, pipe_costs, pump_cost_per_wat
         
         # Total cost using pumps and length of pipe
         if head_2 < 3:
-            head_2 = 3 # minimum outlet head (3m)
-            pump_head = head_2 - delta_H - head_1
+            outlet_head = 3 # minimum outlet head (3m)
+            pump_head = outlet_head - delta_H - head_1              
             pump_power = rho*g*flow_rate*pump_head*1/0.7 # assuming 70% pump efficiency
+            if pump_power<10:
+                # no need for pump<10W
+                pump_power = 0
+                pump_head = 0
             total_cost = cost_pipe*length_pipe+pump_cost_per_watt*pump_power
         else:
             # no pump needed
@@ -226,17 +230,18 @@ pumping_dict = {
 }
 
 class consumption_generator():
-    def __init__(self, profile_file, nb_capita, G, household_positions):
+    def __init__(self, profile_file, nb_capita, G, household_positions, base_flow):
         self.usage_profile = pd.read_excel(profile_file,index_col="Heure")
         self.nb_capita = nb_capita
         self.graph = G
         self.graph_nodes = list(self.graph)
         self.node_dict = {self.graph_nodes[i]:i for i in range(len(self.graph_nodes))}
+        self.base_flow = base_flow
         self.household_positions = household_positions
         self.pump_coords = np.array(list(nx.get_node_attributes(self.graph, 'coords').values()))
         self.min_indices = pump_distance(self.pump_coords, household_positions)[1]
         self.generate_pump_on_times()
-        
+
 
     def get_consumption(self):
         # Calculate daily consumption
@@ -276,7 +281,7 @@ class consumption_generator():
 
             # Calculate consumption and flowing times
             consumption = dist * consumption_dict[k]
-            flowing_times = consumption / (0.3 * 60)  # minutes
+            flowing_times = consumption / (self.base_flow * 60)  # minutes
             
             # For each hour, generate intervals with durations and random start times
             on_times_dict = {}
@@ -348,7 +353,7 @@ class consumption_generator():
                 if current_depth > 0:
                     processed_profile.append({
                         'start': prev_time,
-                        'end': time,
+                        'duration': time-prev_time,
                         'flow_multiplier': current_depth 
                     })
             
@@ -416,6 +421,7 @@ class TopologyPositionProblem(ElementwiseProblem):
                  bounds_xy,
                  impact_fn,
                  altitude_interpolator,
+                 base_flow,
                  **kwargs):
         m = len(fixed_nodes)
         n = n_new_nodes
@@ -450,6 +456,7 @@ class TopologyPositionProblem(ElementwiseProblem):
                                         self.house_weights)
         self.impact_fn = impact_fn
         self.altitude_interpolator = altitude_interpolator
+        self.base_flow = base_flow
         
         #kwargs
         self.cost_fountain = kwargs.get("cost_fountain")
@@ -459,6 +466,23 @@ class TopologyPositionProblem(ElementwiseProblem):
         self.pump_cost_per_watt = kwargs.get("pump_cost_per_watt")
         self.fountains_retrofitted = kwargs.get("fountains_retrofitted")
         self.pumping_method = kwargs.get("pumping_method")
+        
+        # Define pumping cost params
+        # Diesel
+        self.discount_rate = 0.05 # 5% discount rate
+        self.specific_consumption = 0.35 #L/kWh for diesel pumps
+        self.diesel_price = 1.22*0.84 # €/Litre (converted from https://www.globalpetrolprices.com/Burkina-Faso/diesel_prices/, 26 Jan 2026)
+        self.oandm = 0.05 # €/kWh Operation and Maintenance (diesel)
+        self.generator_cost_per_kw = 100*0.84 # €/kW (assuming demand is concentrated to 3hrs) for diesel generator operation
+        
+        #Electric
+        self.peak_sun_hours = kwargs.get("peak_sun_hours")
+        self.performance_ratio = 0.8
+        self.panel_cost_per_kwp = 1000 #€/kWp
+        self.efficiency_battery = 0.85
+        self.depth_of_discharge = 0.7
+        self.battery_cost_per_kwh = 236*0.84 #€/kWh (https://doi.org/10.1186/s13705-024-00480-1)
+        
         
         
         self.fixed_heights = self.fixed_heights + self.water_tower_height
@@ -476,8 +500,8 @@ class TopologyPositionProblem(ElementwiseProblem):
         for i in self.fixed_nodes:
             # perform breadth first search from each fixed pump
             for parent,child in nx.bfs_edges(G, i):
-                q_pipe = (len(nx.descendants(G, child))+1)*0.3/1000  #0.3 L/s per fountain
-                G[parent][child]['flow_rate'] = q_pipe
+                max_q_pipe = (len(nx.descendants(G, child))+1)*self.base_flow/1000  #0.3 L/s per fountain
+                G[parent][child]['flow_rate'] = max_q_pipe
                 length_pipe = G[parent][child]['weight']
                 
                 alt1 = G.nodes[parent]['height']
@@ -485,7 +509,7 @@ class TopologyPositionProblem(ElementwiseProblem):
                     
                 alt2 = G.nodes[child]['height']
                 min_pipe_cost, diameter_pipe, outlet_head, pump_power, pump_head=pipe_calcs(
-                    alt1,alt2,length_pipe,q_pipe,self.pipe_costs,self.pump_cost_per_watt, head_1)
+                    alt1,alt2,length_pipe,max_q_pipe,self.pipe_costs,self.pump_cost_per_watt, head_1)
                 
                 # Give node and edge attributes for the pressure, pipes etc.
                 G.add_nodes_from([(child,{"head":outlet_head})])
@@ -494,8 +518,49 @@ class TopologyPositionProblem(ElementwiseProblem):
         return G
     
     def calculate_running_costs(self, G):
-        X = G.edges(data=True)        
-        return
+        pumping_costs = 0
+        edges = G.edges(data=True)     
+        for edge in edges:
+            pipe_vol = 0
+            volume_pumped=0
+            edge_costs = 0
+            for flow in edge[2]['flow_schedule']:
+                t = flow['duration']
+                Q = flow['flow_multiplier']*self.base_flow/1000 # m3/s
+                volume_pumped = Q*t # m3
+                pipe_vol += volume_pumped
+                
+            pressure = edge[2]['pump_head']*9.81*1000 # Pa
+            E = pressure*volume_pumped/0.7/3600000 # kWh, assuming 70% pump efficiency
+    
+            if self.pumping_method == "Electric":
+                # Calculate electric pumping costs
+                pv_power = E/(self.peak_sun_hours*self.performance_ratio) #kWp
+                cost_pv = pv_power*self.panel_cost_per_kwp #€
+                
+                battery_capacity = 1.5*E/(self.efficiency_battery*self.depth_of_discharge) #kWp
+                cost_battery = battery_capacity*self.battery_cost_per_kwh #€
+                
+                discounted_battery_costs = cost_battery+np.sum([cost_battery/((1+self.discount_rate)**year) for year in np.arange(5,21,4)]) # (replacement every 4 years + initial)
+                
+                total_cost = cost_pv + discounted_battery_costs
+                edge_costs += total_cost
+                pumping_costs += total_cost
+
+            elif self.pumping_method == "Diesel":
+                # Calculate diesel pumping costs
+                annual_cost = (E*self.specific_consumption*self.diesel_price + E*self.oandm)*365 # €/year
+                discounted_running_costs = np.sum([annual_cost/((1+self.discount_rate)**year) for year in range(1,21)]) # 20 year lifespan
+                
+                generator_cost = E/3*self.generator_cost_per_kw
+                
+                total_cost = discounted_running_costs + generator_cost
+                edge_costs += total_cost
+                pumping_costs += total_cost
+
+            G.add_edge(*edge[0:2],pumping_cost = pumping_costs)
+
+        return pumping_costs, G
     
     def _evaluate(self, X, out, *args, **kwargs):
         """
@@ -571,7 +636,8 @@ class TopologyPositionProblem(ElementwiseProblem):
             profile_file=r'src\data\usage_profile2.xlsx',
             nb_capita=self.house_weights,
             G=G,
-            household_positions=self.house_coords)
+            household_positions=self.house_coords,
+            base_flow=self.base_flow)
         
         G = cons_gen.assign_consumption_to_graph()
         
@@ -579,14 +645,9 @@ class TopologyPositionProblem(ElementwiseProblem):
         f2 = 0
         updated_graph = self.pipe_and_pump(G)
         
-        ## Calculate running costs
-        if self.pumping_method == "Electric":
-            # Calculate electric pumping costs
-            pass
-        elif self.pumping_method == "Diesel":
-            # Calculate diesel pumping costs
-            pass
-
+        pumping_costs, updated_graph = self.calculate_running_costs(updated_graph)
+        f2 += pumping_costs
+        
         f2 += np.sum(self.fixed_costs)
         f2 += sum(nx.get_edge_attributes(updated_graph,'pipe_cost').values())
         
@@ -799,6 +860,7 @@ def attach_numeric_bounds(problem):
 def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
                                 house_coords, house_weights, n_new_nodes,
                                 bounds_xy, impact_fn, altitude_interpolator,
+                                base_flow,
                                 **kwargs):    
     problem = TopologyPositionProblem(
         fixed_nodes=fixed_nodes,
@@ -810,6 +872,7 @@ def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
         bounds_xy=bounds_xy,
         impact_fn=impact_fn,
         altitude_interpolator=altitude_interpolator,
+        base_flow=base_flow,
         **kwargs
     )
     xl, xu, var_items = attach_numeric_bounds(problem)
@@ -1503,6 +1566,45 @@ def setup_data(file_path):
     
     return households, pumps, pos_households, nb_capita, pos_pumps, bounds, grid_x, grid_y, grid_z, get_alt
 
+def get_psh(lat, lon, start_year=2018, end_year=2023):
+    """
+    Fetches monthly solar radiation data from the PVGIS API.
+    """
+    url = "https://re.jrc.ec.europa.eu/api/MRcalc"
+    
+    # Define parameters for the API call
+    params = {
+        'lat': lat,
+        'lon': lon,
+        'horirrad': 1,        # Global horizontal irradiation
+        'optrad': 1,          # Irradiation at optimal tilt
+        'startyear': start_year,
+        'endyear': end_year,
+        'outputformat': 'json'
+    }
+
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()  # Check for HTTP errors
+        data = response.json()
+        
+        # Extract the monthly data series
+        monthly_data = data['outputs']['monthly']
+        df = pd.DataFrame(monthly_data)
+        
+        # Calculate Peak Sun Hours (PSH)
+        # PVGIS returns kWh/m2/month
+        # PSH = (Monthly Total) / (Days in Month)
+        # Note: 1 kWh/m2 is equivalent to 1 PSH because PSH is defined at 1kW/m2.
+        month_days = {1:31, 2:28, 3:31, 4:30, 5:31, 6:30, 7:31, 8:31, 9:30, 10:31, 11:30, 12:31}
+        worst_month = df.loc[df['H(i_opt)_m'].idxmin()]
+        psh = worst_month['H(i_opt)_m']/month_days[int(worst_month['month'])]
+        
+        return psh
+
+    except Exception as e:
+        return f"Error: {e}"
+
 def run_optimisation_and_plot():
     
     """
@@ -1511,6 +1613,7 @@ def run_optimisation_and_plot():
     try:       
         
         labour_and_fixed_pipe = 3 #€/m
+        base_flow = 0.3 #L/s
         
         gui_kwargs = {
             "cost_conversion" : float(entry_widgets["Conversion Cost (€)"].get()),
@@ -1535,6 +1638,8 @@ def run_optimisation_and_plot():
         
         households, pumps, pos_households, nb_capita, pos_pumps, bounds, grid_x, grid_y, grid_z, get_alt = setup_data(r'..\DO_NOT_DISTRIBUTE\DO_NOT_DISTRIBUTE_DATA_GOGMA.xlsx')
         
+        gui_kwargs["peak_sun_hours"] = get_psh(pos_pumps[0,1], pos_pumps[0,0]) # take the first pump position
+        
         # Run optimiser
         all_result_vals = []
         all_indices = []
@@ -1544,7 +1649,7 @@ def run_optimisation_and_plot():
         for i in range(1,max_nb_fountains+1):
             res, res_pipe_data = calculate_optimal_placement(pumps.index.to_list(), pos_pumps,
                                             pumps['Altitude'].to_numpy(), pos_households,
-                                            nb_capita, i, bounds, impactfn, get_alt,
+                                            nb_capita, i, bounds, impactfn, get_alt, base_flow,
                                             **gui_kwargs)
             all_result_vals.append(res.F)
             all_indices.append(res.X[:,:i])
