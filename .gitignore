@@ -1,10 +1,12 @@
 # Ignore contents of data, but keep the folder via .gitkeep
 src/data/*
 !src/data/.gitkeep
+!src\data\usage_profile2.xlsx
 
 # Ignore contents of Output, but keep the folder via .gitkeep
 src/Output/*
 !src/Output/.gitkeep
+!src/Output/examples
 
 # Ignore Old-files
 src/Old-files/*
