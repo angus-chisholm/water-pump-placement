@@ -1,28 +1,32 @@
-## Import modules
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-import geopy.distance as geo
-from geopy.distance import great_circle, lonlat
-import pandas as pd
-from scipy.interpolate import griddata, RBFInterpolator
-from pymoo.core.variable import Real, Integer, Binary
-from pymoo.core.sampling import Sampling
-from pymoo.core.repair import Repair
-from pymoo.algorithms.moo.nsga2 import NSGA2
-from pymoo.optimize import minimize
-from pymoo.core.problem import ElementwiseProblem
-from pymoo.operators.mutation.pm import PolynomialMutation as PM
-from pymoo.operators.crossover.sbx import SBX
-import networkx as nx
-import fluids
-import tkinter as tk
-from tkinter import messagebox
-import traceback
-from datetime import datetime
+# Standard library imports
+import math
 import os
 import pickle
-import math
+import traceback
+from datetime import datetime
+import tkinter as tk
+from tkinter import messagebox
+
+# Third-party imports
+import fluids
+from geopy.distance import great_circle, lonlat
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import networkx as nx
+import numpy as np
+import pandas as pd
+from scipy.interpolate import RBFInterpolator, griddata
+import requests
+
+# Pymoo imports (Optimisation)
+from pymoo.algorithms.moo.nsga2 import NSGA2
+from pymoo.core.problem import ElementwiseProblem
+from pymoo.core.repair import Repair
+from pymoo.core.sampling import Sampling
+from pymoo.core.variable import Binary, Integer, Real
+from pymoo.operators.crossover.sbx import SBX
+from pymoo.operators.mutation.pm import PolynomialMutation as PM
+from pymoo.optimize import minimize
 
 
 ## Define functions
@@ -167,9 +171,13 @@ def pipe_calcs(alt1, alt2, length_pipe, flow_rate, pipe_costs, pump_cost_per_wat
         
         # Total cost using pumps and length of pipe
         if head_2 < 3:
-            head_2 = 3 # minimum outlet head (3m)
-            pump_head = head_2 - delta_H - head_1
+            outlet_head = 3 # minimum outlet head (3m)
+            pump_head = outlet_head - delta_H - head_1              
             pump_power = rho*g*flow_rate*pump_head*1/0.7 # assuming 70% pump efficiency
+            if pump_power<10:
+                # no need for pump<10W
+                pump_power = 0
+                pump_head = 0
             total_cost = cost_pipe*length_pipe+pump_cost_per_watt*pump_power
         else:
             # no pump needed
@@ -226,17 +234,18 @@ pumping_dict = {
 }
 
 class consumption_generator():
-    def __init__(self, profile_file, nb_capita, G, household_positions):
+    def __init__(self, profile_file, nb_capita, G, household_positions, base_flow):
         self.usage_profile = pd.read_excel(profile_file,index_col="Heure")
         self.nb_capita = nb_capita
         self.graph = G
         self.graph_nodes = list(self.graph)
         self.node_dict = {self.graph_nodes[i]:i for i in range(len(self.graph_nodes))}
+        self.base_flow = base_flow
         self.household_positions = household_positions
         self.pump_coords = np.array(list(nx.get_node_attributes(self.graph, 'coords').values()))
         self.min_indices = pump_distance(self.pump_coords, household_positions)[1]
         self.generate_pump_on_times()
-        
+
 
     def get_consumption(self):
         # Calculate daily consumption
@@ -271,29 +280,41 @@ class consumption_generator():
             rng = np.random.default_rng(i)
             
             # Generate consumption distribution
-            dist = np.array([self.generate_value_gaussian(m, s, rng) for m, s in zip(means, std_devs)]).clip(min=0)
+            dist = np.array([self.generate_value_gaussian(m, s, rng) if s != 0 else 0 for m, s in zip(means, std_devs) ]).clip(min=0)
             dist = dist / dist.sum()
-            
+
             # Calculate consumption and flowing times
             consumption = dist * consumption_dict[k]
-            flowing_times = consumption / (0.3 * 60)  # minutes
+            flowing_times = consumption / (self.base_flow * 60)  # minutes
             
             # For each hour, generate intervals with durations and random start times
             on_times_dict = {}
+
             for hour_idx, flowing_time in enumerate(flowing_times):
                 remaining_time = flowing_time
-                while remaining_time > 0.01:  # Small threshold for floating point
-                    # Interval is either 2 minutes or whatever is left
+                on_times_dict[hour_idx] = []
+                while remaining_time > 0.01:
                     interval_duration = min(2, remaining_time)
                     remaining_time -= interval_duration
-                    
-                    # Generate random start time that doesn't overlap into next hour
-                    # Max start (in seconds) = 60 mins - interval_duration
-                    max_start_seconds = (60 - interval_duration) * 60
-                    if max_start_seconds > 0:
+                    interval_duration_sec = math.floor(interval_duration * 60)
+                    max_start_seconds = 3600 - interval_duration_sec
+
+                    if max_start_seconds <= 0:
+                        break
+                    # Try until we find a non-overlapping slot
+                    for _ in range(100):  # safety cap
                         start_second = math.floor(rng.uniform(0, max_start_seconds))
-                        interval_duration_sec = math.floor(interval_duration * 60)  # Convert to seconds
-                        on_times_dict[hour_idx] = on_times_dict.get(hour_idx, []) + [(start_second, interval_duration_sec)]
+                        end_second = start_second + interval_duration_sec
+                        overlaps = any(
+                            not (end_second <= s or start_second >= s + d)
+                            for s, d in on_times_dict[hour_idx]
+                        )
+                        if not overlaps:
+                            on_times_dict[hour_idx].append((start_second, interval_duration_sec))
+                            break
+                    else:
+                        # Could not place interval without overlap
+                        break
             
             pump_on_times[k] = on_times_dict
 
@@ -336,7 +357,7 @@ class consumption_generator():
                 if current_depth > 0:
                     processed_profile.append({
                         'start': prev_time,
-                        'end': time,
+                        'duration': time-prev_time,
                         'flow_multiplier': current_depth 
                     })
             
@@ -404,6 +425,7 @@ class TopologyPositionProblem(ElementwiseProblem):
                  bounds_xy,
                  impact_fn,
                  altitude_interpolator,
+                 base_flow,
                  **kwargs):
         m = len(fixed_nodes)
         n = n_new_nodes
@@ -438,6 +460,7 @@ class TopologyPositionProblem(ElementwiseProblem):
                                         self.house_weights)
         self.impact_fn = impact_fn
         self.altitude_interpolator = altitude_interpolator
+        self.base_flow = base_flow
         
         #kwargs
         self.cost_fountain = kwargs.get("cost_fountain")
@@ -446,6 +469,24 @@ class TopologyPositionProblem(ElementwiseProblem):
         self.pipe_costs = kwargs.get("pipe_costs")
         self.pump_cost_per_watt = kwargs.get("pump_cost_per_watt")
         self.fountains_retrofitted = kwargs.get("fountains_retrofitted")
+        self.pumping_method = kwargs.get("pumping_method")
+        
+        # Define pumping cost params
+        # Diesel
+        self.discount_rate = 0.05 # 5% discount rate
+        self.specific_consumption = 0.35 #L/kWh for diesel pumps
+        self.diesel_price = 1.22*0.84 # €/Litre (converted from https://www.globalpetrolprices.com/Burkina-Faso/diesel_prices/, 26 Jan 2026)
+        self.oandm = 0.05 # €/kWh Operation and Maintenance (diesel)
+        self.generator_cost_per_kw = 100*0.84 # €/kW (assuming demand is concentrated to 3hrs) for diesel generator operation
+        
+        #Electric
+        self.peak_sun_hours = kwargs.get("peak_sun_hours")
+        self.performance_ratio = 0.8
+        self.panel_cost_per_kwp = 1000 #€/kWp
+        self.efficiency_battery = 0.85
+        self.depth_of_discharge = 0.7
+        self.battery_cost_per_kwh = 236*0.84 #€/kWh (https://doi.org/10.1186/s13705-024-00480-1)
+        
         
         
         self.fixed_heights = self.fixed_heights + self.water_tower_height
@@ -463,8 +504,8 @@ class TopologyPositionProblem(ElementwiseProblem):
         for i in self.fixed_nodes:
             # perform breadth first search from each fixed pump
             for parent,child in nx.bfs_edges(G, i):
-                q_pipe = (len(nx.descendants(G, child))+1)*0.3/1000  #0.3 L/s per fountain
-                G[parent][child]['flow_rate'] = q_pipe
+                max_q_pipe = (len(nx.descendants(G, child))+1)*self.base_flow/1000  #0.3 L/s per fountain
+                G[parent][child]['flow_rate'] = max_q_pipe
                 length_pipe = G[parent][child]['weight']
                 
                 alt1 = G.nodes[parent]['height']
@@ -472,13 +513,59 @@ class TopologyPositionProblem(ElementwiseProblem):
                     
                 alt2 = G.nodes[child]['height']
                 min_pipe_cost, diameter_pipe, outlet_head, pump_power, pump_head=pipe_calcs(
-                    alt1,alt2,length_pipe,q_pipe,self.pipe_costs,self.pump_cost_per_watt, head_1)
+                    alt1,alt2,length_pipe,max_q_pipe,self.pipe_costs,self.pump_cost_per_watt, head_1)
                 
                 # Give node and edge attributes for the pressure, pipes etc.
                 G.add_nodes_from([(child,{"head":outlet_head})])
                 G.add_edges_from([(parent,child,{"diameter":diameter_pipe,
                                                     "pump_power":pump_power,"pump_head":pump_head,"pipe_cost":min_pipe_cost})])
         return G
+    
+    def calculate_running_costs(self, G):
+        pumping_costs = 0
+        edges = G.edges(data=True)     
+        for edge in edges:
+            pipe_vol = 0
+            volume_pumped=0
+            edge_costs = 0
+            for flow in edge[2]['flow_schedule']:
+                t = flow['duration']
+                Q = flow['flow_multiplier']*self.base_flow/1000 # m3/s
+                volume_pumped = Q*t # m3
+                pipe_vol += volume_pumped
+                
+            pressure = edge[2]['pump_head']*9.81*1000 # Pa
+            E = pressure*volume_pumped/0.7/3600000 # kWh, assuming 70% pump efficiency
+            
+            if self.pumping_method == "Electric":
+                # Calculate electric pumping costs
+                pv_power = E/(self.peak_sun_hours*self.performance_ratio) #kWp
+                cost_pv = pv_power*self.panel_cost_per_kwp #€
+                
+                battery_capacity = 1.5*E/(self.efficiency_battery*self.depth_of_discharge) #kWp
+                cost_battery = battery_capacity*self.battery_cost_per_kwh #€
+                
+                discounted_battery_costs = cost_battery+np.sum([cost_battery/((1+self.discount_rate)**year) for year in np.arange(5,21,4)]) # (replacement every 4 years + initial)
+                
+                total_cost = cost_pv + discounted_battery_costs
+                edge_costs += total_cost
+                pumping_costs += total_cost
+
+            elif self.pumping_method == "Diesel":
+                # Calculate diesel pumping costs
+                annual_cost = (E*self.specific_consumption*self.diesel_price + E*self.oandm)*365 # €/year
+                discounted_running_costs = np.sum([annual_cost/((1+self.discount_rate)**year) for year in range(1,21)]) # 20 year lifespan
+                
+                generator_cost = E/3*self.generator_cost_per_kw
+                
+                total_cost = discounted_running_costs + generator_cost
+                edge_costs += total_cost
+                pumping_costs += total_cost
+
+            G.add_edge(*edge[0:2],pumping_cost = edge_costs)
+            
+
+        return pumping_costs, G
     
     def _evaluate(self, X, out, *args, **kwargs):
         """
@@ -508,11 +595,6 @@ class TopologyPositionProblem(ElementwiseProblem):
                 parent_coord = self.fixed_coords[p]
                 self.fixed_costs[p] = self.cost_conversion
                 converted_fixed_pumps += 1
-                if converted_fixed_pumps > self.fountains_retrofitted:
-                    out["F"] = [1e6, 1e6]  # large penalty
-                    return
-                else:
-                    pass
             else:
                 parent = f"N{p - len(self.fixed_nodes)}"
                 parent_coord = coords[p - len(self.fixed_nodes)]
@@ -520,7 +602,11 @@ class TopologyPositionProblem(ElementwiseProblem):
             coord_new_node = coords[i]
             length = great_circle(lonlat(*parent_coord), lonlat(*coord_new_node)).meters
             G.add_edge(parent, child, weight=length)
-
+            
+        if n >= self.fountains_retrofitted:
+            if converted_fixed_pumps != self.fountains_retrofitted:
+                out["F"] = [1e6, 1e6]  # large penalty
+                return
                 
         # Check acyclic
         if not nx.is_directed_acyclic_graph(G):
@@ -551,16 +637,21 @@ class TopologyPositionProblem(ElementwiseProblem):
 
 
         cons_gen = consumption_generator(
-            profile_file=r'src\data\usage_profile.xlsx',
+            profile_file=r'src\data\usage_profile2.xlsx',
             nb_capita=self.house_weights,
             G=G,
-            household_positions=self.house_coords)
+            household_positions=self.house_coords,
+            base_flow=self.base_flow)
         
         G = cons_gen.assign_consumption_to_graph()
         
         # Compute cost f2
         f2 = 0
         updated_graph = self.pipe_and_pump(G)
+        
+        pumping_costs, updated_graph = self.calculate_running_costs(updated_graph)
+        f2 += pumping_costs
+        
         f2 += np.sum(self.fixed_costs)
         f2 += sum(nx.get_edge_attributes(updated_graph,'pipe_cost').values())
         
@@ -773,6 +864,7 @@ def attach_numeric_bounds(problem):
 def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
                                 house_coords, house_weights, n_new_nodes,
                                 bounds_xy, impact_fn, altitude_interpolator,
+                                base_flow,
                                 **kwargs):    
     problem = TopologyPositionProblem(
         fixed_nodes=fixed_nodes,
@@ -784,6 +876,7 @@ def calculate_optimal_placement(fixed_nodes, fixed_coords, fixed_heights,
         bounds_xy=bounds_xy,
         impact_fn=impact_fn,
         altitude_interpolator=altitude_interpolator,
+        base_flow=base_flow,
         **kwargs
     )
     xl, xu, var_items = attach_numeric_bounds(problem)
@@ -1279,32 +1372,24 @@ class InteractiveParetoPlot:
         # Get the graph
         graph = self.get_pipe_data_text(config_idx, solution_in_config, solution_X)
         
+        # 1. Start with your geographic positions
+        initial_pos = {node: np.array(graph.nodes[node].get('coords', (0, 0))) for node in graph.nodes()}
+
+        # 2. Use spring_layout to 'nudge' nodes apart
+        # k=0.1 to 0.5 controls the distance between nodes
+        pos = nx.spring_layout(
+            graph, 
+            pos=initial_pos, 
+            fixed=None,      # Allow all nodes to move slightly
+            k=0.3,           # Increase this if labels still overlap
+            iterations=50
+            )
+        
         if graph is None or len(graph.nodes()) == 0:
             self.ax3.text(0.5, 0.5, "No graph data", ha='center', va='center')
             self.ax3.set_xlim(0, 1)
             self.ax3.set_ylim(0, 1)
             return
-        
-        # Create layout using geographic coordinates scaled by edge weights
-        pos = {}
-        for node in graph.nodes():
-            coords = graph.nodes[node].get('coords', (0, 0))
-            pos[node] = np.array(coords)
-        
-        # Scale positions based on edge lengths to make arrow length proportional to weight
-        # Find the maximum distance between any two connected nodes to normalize
-        max_distance = 0
-        distances = {}
-        for u, v, data in graph.edges(data=True):
-            dist = np.linalg.norm(pos[u] - pos[v])
-            distances[(u, v)] = dist
-            max_distance = max(max_distance, dist)
-        
-        # Normalize positions so that edge lengths are proportional to their weight (length)
-        if max_distance > 0:
-            scale_factor = 1.0 / max_distance
-            for node in pos:
-                pos[node] = pos[node] * scale_factor
         
         # Draw nodes
         node_colors = []
@@ -1323,12 +1408,6 @@ class InteractiveParetoPlot:
             linewidths=2
         )
         
-        # Calculate edge widths based on diameter (larger diameter = thicker line)
-        edge_widths = []
-        for u, v, data in graph.edges(data=True):
-            diameter = data.get('diameter', 0.02)  # meters
-            width = max(0.9, diameter * 100)  # Scale diameter to line width
-            edge_widths.append(width)
         
         # Draw edges with straight arrows
         nx.draw_networkx_edges(
@@ -1337,7 +1416,6 @@ class InteractiveParetoPlot:
             arrows=True,
             arrowsize=20,
             arrowstyle='->',
-            width=edge_widths,
             connectionstyle="arc3,rad=0"
         )
         # Create node labels with all node data
@@ -1362,6 +1440,9 @@ class InteractiveParetoPlot:
             length = data.get('weight', 'N/A')
             pump_power = data.get('pump_power', 'N/A')
             pipe_cost = data.get('pipe_cost', 'N/A')
+            pumping_cost = data.get('pumping_cost', 'N/A')
+            
+            
             
             if isinstance(flow_rate, (int, float)):
                 flow_rate = f"{flow_rate*1000:.2f}L/s"
@@ -1373,12 +1454,17 @@ class InteractiveParetoPlot:
                 pump_power = f"{pump_power:.1f}W"
             if isinstance(pipe_cost, (int, float)):
                 pipe_cost = f"€{pipe_cost:.2f}"
+            if isinstance(pumping_cost, (int, float)):
+                pumping_cost = f"€{pumping_cost:.2f}"
             
-            edge_labels[(u, v)] = f"∅:{diameter}\nQ:{flow_rate}\nL:{length}\nPower:{pump_power}\nCost:{pipe_cost}"
+            edge_labels[(u, v)] = f"∅:{diameter}\nQ:{flow_rate}\nL:{length}\nPower:{pump_power}\nPipe Cost:{pipe_cost}\n Pumping Cost:{pumping_cost}"
         
         nx.draw_networkx_edge_labels(
             graph, pos, edge_labels, ax=self.ax3,
-            font_size=6
+            font_size=6,
+            bbox=dict(boxstyle="round,pad=0.2", fc="grey", alpha=0.6, ec="none"),
+            label_pos=0.5,
+            rotate=False,
         )
         
         
@@ -1477,6 +1563,45 @@ def setup_data(file_path):
     
     return households, pumps, pos_households, nb_capita, pos_pumps, bounds, grid_x, grid_y, grid_z, get_alt
 
+def get_psh(lat, lon, start_year=2018, end_year=2023):
+    """
+    Fetches monthly solar radiation data from the PVGIS API.
+    """
+    url = "https://re.jrc.ec.europa.eu/api/MRcalc"
+    
+    # Define parameters for the API call
+    params = {
+        'lat': lat,
+        'lon': lon,
+        'horirrad': 1,        # Global horizontal irradiation
+        'optrad': 1,          # Irradiation at optimal tilt
+        'startyear': start_year,
+        'endyear': end_year,
+        'outputformat': 'json'
+    }
+
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()  # Check for HTTP errors
+        data = response.json()
+        
+        # Extract the monthly data series
+        monthly_data = data['outputs']['monthly']
+        df = pd.DataFrame(monthly_data)
+        
+        # Calculate Peak Sun Hours (PSH)
+        # PVGIS returns kWh/m2/month
+        # PSH = (Monthly Total) / (Days in Month)
+        # Note: 1 kWh/m2 is equivalent to 1 PSH because PSH is defined at 1kW/m2.
+        month_days = {1:31, 2:28, 3:31, 4:30, 5:31, 6:30, 7:31, 8:31, 9:30, 10:31, 11:30, 12:31}
+        worst_month = df.loc[df['H(i_opt)_m'].idxmin()]
+        psh = worst_month['H(i_opt)_m']/month_days[int(worst_month['month'])]
+        
+        return psh
+
+    except Exception as e:
+        return f"Error: {e}"
+
 def run_optimisation_and_plot():
     
     """
@@ -1485,6 +1610,7 @@ def run_optimisation_and_plot():
     try:       
         
         labour_and_fixed_pipe = 3 #€/m
+        base_flow = 0.3 #L/s
         
         gui_kwargs = {
             "cost_conversion" : float(entry_widgets["Conversion Cost (€)"].get()),
@@ -1500,14 +1626,17 @@ def run_optimisation_and_plot():
             },
             "water_tower_height" : float(entry_widgets["Water Tower Height (m)"].get()),
             "fountains_retrofitted" : float(entry_widgets["Fountains Retrofitted"].get()),
-            "Pumping method": impact_dict[entry_widgets["Pumping Method"].get()]
+            "pumping_method": pumping_dict[entry_widgets["Pumping Method"].get()]
         }
+        
         impactfn = impact_dict[entry_widgets["Impact Function"].get()]
         max_nb_fountains = int(entry_widgets["Maximum Number of New Fountains"].get())
     
         # Setup data
         
         households, pumps, pos_households, nb_capita, pos_pumps, bounds, grid_x, grid_y, grid_z, get_alt = setup_data(r'..\DO_NOT_DISTRIBUTE\DO_NOT_DISTRIBUTE_DATA_GOGMA.xlsx')
+        
+        gui_kwargs["peak_sun_hours"] = get_psh(pos_pumps[0,1], pos_pumps[0,0]) # take the first pump position
         
         # Run optimiser
         all_result_vals = []
@@ -1518,7 +1647,7 @@ def run_optimisation_and_plot():
         for i in range(1,max_nb_fountains+1):
             res, res_pipe_data = calculate_optimal_placement(pumps.index.to_list(), pos_pumps,
                                             pumps['Altitude'].to_numpy(), pos_households,
-                                            nb_capita, i, bounds, impactfn, get_alt,
+                                            nb_capita, i, bounds, impactfn, get_alt, base_flow,
                                             **gui_kwargs)
             all_result_vals.append(res.F)
             all_indices.append(res.X[:,:i])
