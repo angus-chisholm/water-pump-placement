@@ -1,28 +1,32 @@
-## Import modules
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-import geopy.distance as geo
-from geopy.distance import great_circle, lonlat
-import pandas as pd
-from scipy.interpolate import griddata, RBFInterpolator
-from pymoo.core.variable import Real, Integer, Binary
-from pymoo.core.sampling import Sampling
-from pymoo.core.repair import Repair
-from pymoo.algorithms.moo.nsga2 import NSGA2
-from pymoo.optimize import minimize
-from pymoo.core.problem import ElementwiseProblem
-from pymoo.operators.mutation.pm import PolynomialMutation as PM
-from pymoo.operators.crossover.sbx import SBX
-import networkx as nx
-import fluids
-import tkinter as tk
-from tkinter import messagebox
-import traceback
-from datetime import datetime
+# Standard library imports
+import math
 import os
 import pickle
-import math
+import traceback
+from datetime import datetime
+import tkinter as tk
+from tkinter import messagebox
+
+# Third-party imports
+import fluids
+from geopy.distance import great_circle, lonlat
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import networkx as nx
+import numpy as np
+import pandas as pd
+from scipy.interpolate import RBFInterpolator, griddata
+import requests
+
+# Pymoo imports (Optimisation)
+from pymoo.algorithms.moo.nsga2 import NSGA2
+from pymoo.core.problem import ElementwiseProblem
+from pymoo.core.repair import Repair
+from pymoo.core.sampling import Sampling
+from pymoo.core.variable import Binary, Integer, Real
+from pymoo.operators.crossover.sbx import SBX
+from pymoo.operators.mutation.pm import PolynomialMutation as PM
+from pymoo.optimize import minimize
 
 
 ## Define functions
@@ -532,7 +536,7 @@ class TopologyPositionProblem(ElementwiseProblem):
                 
             pressure = edge[2]['pump_head']*9.81*1000 # Pa
             E = pressure*volume_pumped/0.7/3600000 # kWh, assuming 70% pump efficiency
-    
+            
             if self.pumping_method == "Electric":
                 # Calculate electric pumping costs
                 pv_power = E/(self.peak_sun_hours*self.performance_ratio) #kWp
@@ -558,7 +562,8 @@ class TopologyPositionProblem(ElementwiseProblem):
                 edge_costs += total_cost
                 pumping_costs += total_cost
 
-            G.add_edge(*edge[0:2],pumping_cost = pumping_costs)
+            G.add_edge(*edge[0:2],pumping_cost = edge_costs)
+            
 
         return pumping_costs, G
     
@@ -590,11 +595,6 @@ class TopologyPositionProblem(ElementwiseProblem):
                 parent_coord = self.fixed_coords[p]
                 self.fixed_costs[p] = self.cost_conversion
                 converted_fixed_pumps += 1
-                if converted_fixed_pumps > self.fountains_retrofitted:
-                    out["F"] = [1e6, 1e6]  # large penalty
-                    return
-                else:
-                    pass
             else:
                 parent = f"N{p - len(self.fixed_nodes)}"
                 parent_coord = coords[p - len(self.fixed_nodes)]
@@ -602,7 +602,11 @@ class TopologyPositionProblem(ElementwiseProblem):
             coord_new_node = coords[i]
             length = great_circle(lonlat(*parent_coord), lonlat(*coord_new_node)).meters
             G.add_edge(parent, child, weight=length)
-
+            
+        if n >= self.fountains_retrofitted:
+            if converted_fixed_pumps != self.fountains_retrofitted:
+                out["F"] = [1e6, 1e6]  # large penalty
+                return
                 
         # Check acyclic
         if not nx.is_directed_acyclic_graph(G):
@@ -1368,32 +1372,24 @@ class InteractiveParetoPlot:
         # Get the graph
         graph = self.get_pipe_data_text(config_idx, solution_in_config, solution_X)
         
+        # 1. Start with your geographic positions
+        initial_pos = {node: np.array(graph.nodes[node].get('coords', (0, 0))) for node in graph.nodes()}
+
+        # 2. Use spring_layout to 'nudge' nodes apart
+        # k=0.1 to 0.5 controls the distance between nodes
+        pos = nx.spring_layout(
+            graph, 
+            pos=initial_pos, 
+            fixed=None,      # Allow all nodes to move slightly
+            k=0.3,           # Increase this if labels still overlap
+            iterations=50
+            )
+        
         if graph is None or len(graph.nodes()) == 0:
             self.ax3.text(0.5, 0.5, "No graph data", ha='center', va='center')
             self.ax3.set_xlim(0, 1)
             self.ax3.set_ylim(0, 1)
             return
-        
-        # Create layout using geographic coordinates scaled by edge weights
-        pos = {}
-        for node in graph.nodes():
-            coords = graph.nodes[node].get('coords', (0, 0))
-            pos[node] = np.array(coords)
-        
-        # Scale positions based on edge lengths to make arrow length proportional to weight
-        # Find the maximum distance between any two connected nodes to normalize
-        max_distance = 0
-        distances = {}
-        for u, v, data in graph.edges(data=True):
-            dist = np.linalg.norm(pos[u] - pos[v])
-            distances[(u, v)] = dist
-            max_distance = max(max_distance, dist)
-        
-        # Normalize positions so that edge lengths are proportional to their weight (length)
-        if max_distance > 0:
-            scale_factor = 1.0 / max_distance
-            for node in pos:
-                pos[node] = pos[node] * scale_factor
         
         # Draw nodes
         node_colors = []
@@ -1412,12 +1408,6 @@ class InteractiveParetoPlot:
             linewidths=2
         )
         
-        # Calculate edge widths based on diameter (larger diameter = thicker line)
-        edge_widths = []
-        for u, v, data in graph.edges(data=True):
-            diameter = data.get('diameter', 0.02)  # meters
-            width = max(0.9, diameter * 100)  # Scale diameter to line width
-            edge_widths.append(width)
         
         # Draw edges with straight arrows
         nx.draw_networkx_edges(
@@ -1426,7 +1416,6 @@ class InteractiveParetoPlot:
             arrows=True,
             arrowsize=20,
             arrowstyle='->',
-            width=edge_widths,
             connectionstyle="arc3,rad=0"
         )
         # Create node labels with all node data
@@ -1451,6 +1440,9 @@ class InteractiveParetoPlot:
             length = data.get('weight', 'N/A')
             pump_power = data.get('pump_power', 'N/A')
             pipe_cost = data.get('pipe_cost', 'N/A')
+            pumping_cost = data.get('pumping_cost', 'N/A')
+            
+            
             
             if isinstance(flow_rate, (int, float)):
                 flow_rate = f"{flow_rate*1000:.2f}L/s"
@@ -1462,12 +1454,17 @@ class InteractiveParetoPlot:
                 pump_power = f"{pump_power:.1f}W"
             if isinstance(pipe_cost, (int, float)):
                 pipe_cost = f"€{pipe_cost:.2f}"
+            if isinstance(pumping_cost, (int, float)):
+                pumping_cost = f"€{pumping_cost:.2f}"
             
-            edge_labels[(u, v)] = f"∅:{diameter}\nQ:{flow_rate}\nL:{length}\nPower:{pump_power}\nCost:{pipe_cost}"
+            edge_labels[(u, v)] = f"∅:{diameter}\nQ:{flow_rate}\nL:{length}\nPower:{pump_power}\nPipe Cost:{pipe_cost}\n Pumping Cost:{pumping_cost}"
         
         nx.draw_networkx_edge_labels(
             graph, pos, edge_labels, ax=self.ax3,
-            font_size=6
+            font_size=6,
+            bbox=dict(boxstyle="round,pad=0.2", fc="grey", alpha=0.6, ec="none"),
+            label_pos=0.5,
+            rotate=False,
         )
         
         
@@ -1629,8 +1626,9 @@ def run_optimisation_and_plot():
             },
             "water_tower_height" : float(entry_widgets["Water Tower Height (m)"].get()),
             "fountains_retrofitted" : float(entry_widgets["Fountains Retrofitted"].get()),
-            "Pumping method": pumping_dict[entry_widgets["Pumping Method"].get()]
+            "pumping_method": pumping_dict[entry_widgets["Pumping Method"].get()]
         }
+        
         impactfn = impact_dict[entry_widgets["Impact Function"].get()]
         max_nb_fountains = int(entry_widgets["Maximum Number of New Fountains"].get())
     
